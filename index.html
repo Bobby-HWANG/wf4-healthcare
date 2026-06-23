@@ -767,9 +767,15 @@ $("#btnPullCloud").onclick=async()=>{
   await pullCloud(false); closeCloud();
 };
 
-/* close overlay on backdrop click */
+/* close overlay on backdrop click — only when the press STARTED on the backdrop
+   (입력칸에서 눌러 배경으로 드래그해 떼는 경우엔 닫히지 않도록) */
 document.querySelectorAll(".overlay").forEach(o=>{
-  o.addEventListener("click",e=>{ if(e.target===o)o.classList.remove("show"); });
+  let startedOnBackdrop=false;
+  o.addEventListener("pointerdown",e=>{ startedOnBackdrop=(e.target===o); });
+  o.addEventListener("click",e=>{
+    if(startedOnBackdrop && e.target===o) o.classList.remove("show");
+    startedOnBackdrop=false;
+  });
 });
 
 /* ============ 초기화 ============ */
