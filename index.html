@@ -2,8 +2,12 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#10b981">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="default">
+<meta name="apple-mobile-web-app-title" content="WF4">
 <title>WF4_Healthcare</title>
 <style>
   :root{
@@ -72,7 +76,7 @@
   .field{display:flex; flex-direction:column; gap:4px}
   .field label{font-size:11px; font-weight:700; color:var(--muted)}
   input,select{
-    font-size:15px; padding:10px 11px; border:1px solid var(--line); border-radius:10px;
+    font-size:16px; padding:10px 11px; border:1px solid var(--line); border-radius:10px;
     background:#fff; color:var(--ink); font-family:inherit; width:100%;
   }
   input:focus,select:focus{outline:2px solid var(--green); border-color:var(--green)}
@@ -138,6 +142,23 @@
   .toast.show{opacity:1; transform:translateX(-50%) translateY(-4px)}
   .sync-state{font-size:11px; opacity:.9}
   .hide{display:none!important}
+
+  /* 다크 모드 (시스템 설정 따라감) */
+  @media (prefers-color-scheme: dark){
+    :root{
+      --bg:#0b1220; --card:#111a2e; --line:#26334d; --ink:#e6edf7; --muted:#94a3b8;
+      --shadow:0 1px 3px rgba(0,0,0,.45),0 1px 2px rgba(0,0,0,.35);
+    }
+    body{background:var(--bg)}
+    input,select{background:#0e1830; color:var(--ink); border-color:var(--line)}
+    .btn.ghost{background:#0e1830; color:var(--ink); border-color:var(--line)}
+    .stat{background:linear-gradient(160deg,#0e1830,#111a2e); border-color:var(--line)}
+    .sheet{background:var(--card)}
+    .rangebar button,.toggle2 button{background:#0e1830; color:var(--muted); border-color:var(--line)}
+    .pace{background:#0f2a22; color:#6ee7b7; border-color:#14532d}
+    .pace.bad{background:#2a1414; color:#fca5a5; border-color:#7f1d1d}
+    .pace.neutral{background:#0e1830; color:var(--muted); border-color:var(--line)}
+  }
 </style>
 </head>
 <body>
@@ -147,7 +168,10 @@
       <h1>WF4_Healthcare</h1>
       <div class="sub" id="syncState">로컬 모드</div>
     </div>
-    <button class="icon-btn" id="btnCloud">동기화 설정</button>
+    <div style="display:flex; gap:6px">
+      <button class="icon-btn" id="btnBackup">백업</button>
+      <button class="icon-btn" id="btnCloud">동기화</button>
+    </div>
   </div>
 </header>
 
@@ -161,15 +185,18 @@
   <div class="sheet">
     <h3>클라우드 동기화 (JSONBin.io)</h3>
     <p class="small muted" style="margin-top:-6px">
-      JSONBin.io 가입 → Bin 생성 → API Key 발급 후 아래에 입력하세요. PC·폰에서 같은 값을 넣으면 데이터가 동기화됩니다.
+      JSONBin.io 가입 → Bin 생성(<b>Private 권장</b>) → API Key 입력. PC·폰에 같은 값을 넣으면 자동으로 양방향 동기화됩니다.
       비워두면 이 기기에만 저장(로컬 모드)됩니다.
+    </p>
+    <p class="small" style="margin-top:-4px; color:var(--warn)">
+      보안 팁: 가능하면 계정 전체 권한인 마스터 키 대신, 이 Bin에만 권한을 준 <b>Access Key</b>를 발급해 쓰세요. 키가 노출돼도 이 Bin만 영향을 받습니다.
     </p>
     <div class="field">
       <label>Bin ID</label>
       <input id="cfgBin" placeholder="예: 665f1a2e...">
     </div>
     <div class="field">
-      <label>API Key (X-Master-Key)</label>
+      <label>API Key (Access Key 또는 X-Master-Key)</label>
       <input id="cfgKey" placeholder="$2a$10$...">
     </div>
     <div class="sheet-actions">
@@ -191,11 +218,15 @@
     </div>
     <div class="row2">
       <div class="field"><label>키 (cm) — BMI용</label><input id="pHeight" type="number" inputmode="decimal" placeholder="172"></div>
-      <div class="field"><label>시작 체중 (kg)</label><input id="pStart" type="number" inputmode="decimal" placeholder="78.0"></div>
+      <div class="field"><label>출생연도 (선택)</label><input id="pBirthYear" type="number" inputmode="numeric" placeholder="예: 2011"></div>
     </div>
     <div class="row2">
+      <div class="field"><label>시작 체중 (kg)</label><input id="pStart" type="number" inputmode="decimal" placeholder="78.0"></div>
       <div class="field"><label>목표 체중 (kg)</label><input id="pGoal" type="number" inputmode="decimal" placeholder="68.0"></div>
+    </div>
+    <div class="row2">
       <div class="field"><label>목표 날짜</label><input id="pGoalDate" type="date"></div>
+      <div class="field"></div>
     </div>
     <div class="sheet-actions">
       <button class="btn danger sm" id="btnDeletePerson" style="flex:0 0 auto">삭제</button>
@@ -221,6 +252,26 @@
   </div>
 </div>
 
+<!-- Backup / export sheet -->
+<div class="overlay" id="backupOverlay">
+  <div class="sheet">
+    <h3>데이터 백업 · 내보내기</h3>
+    <p class="small muted" style="margin-top:-6px">
+      기기·브라우저를 바꾸거나 캐시를 지우면 기록이 사라질 수 있어요. 가끔 <b>JSON</b>으로 백업해 두면 그대로 복원할 수 있습니다.
+    </p>
+    <div class="sheet-actions" style="flex-wrap:wrap">
+      <button class="btn" id="btnExportJSON">JSON 내보내기 (백업)</button>
+      <button class="btn blue" id="btnImportJSON">JSON 가져오기 (복원)</button>
+    </div>
+    <div class="sheet-actions">
+      <button class="btn ghost" id="btnExportCSV">CSV 내보내기 (엑셀)</button>
+      <button class="btn ghost" onclick="closeBackup()">닫기</button>
+    </div>
+    <p class="small muted" style="margin-top:10px">가져오기는 현재 데이터와 <b>병합</b>됩니다(덮어쓰지 않음).</p>
+    <input id="importFile" type="file" accept="application/json,.json" class="hide">
+  </div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -237,7 +288,15 @@ let ui={ tab:"compare", range:30, cmpMode:"delta", editRecId:null };
 
 /* ============ 유틸 ============ */
 const $=s=>document.querySelector(s);
-const todayStr=()=>{const d=new Date();return d.toISOString().slice(0,10);};
+const z2=n=>String(n).padStart(2,"0");
+const dateStr=d=>d.getFullYear()+"-"+z2(d.getMonth()+1)+"-"+z2(d.getDate());   // 로컬 기준 YYYY-MM-DD (UTC 밀림 방지)
+const todayStr=()=>dateStr(new Date());
+
+/* 다크 모드용 차트 색상 (SVG는 CSS 변수를 못 읽어 JS로 분기) */
+const DARK = !!(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+const C_GRID = DARK ? "#1e2a44" : "#eef2f7";
+const C_AXIS = DARK ? "#7b8aa3" : "#94a3b8";
+const C_ZERO = DARK ? "#334155" : "#cbd5e1";
 const round1=n=>Math.round(n*10)/10;
 const fmtKg=n=>(n==null||isNaN(n))?"-":round1(n).toFixed(1);
 function parseDate(s){const [y,m,d]=s.split("-").map(Number);return new Date(y,m-1,d);}
@@ -262,6 +321,10 @@ function bmiCat(b){
   if(b<40)   return {t:"고도비만 (3단계)", c:"#dc2626", range:"35~39.9"};
   return            {t:"초고도비만",       c:"#991b1b", range:"40 이상"};
 }
+/* 출생연도로 만 나이(대략) 및 청소년 여부 판별 */
+function ageOf(p){ if(!p||p.birthYear==null) return null; const a=new Date().getFullYear()-p.birthYear; return (a>=0&&a<=120)?a:null; }
+function isYouth(p){ const a=ageOf(p); return a!=null && a<19; }
+function isAdultOrUnknown(p){ const a=ageOf(p); return a==null || a>=19; }
 
 /* 선형회귀: records -> {slope(kg/day), predictDate to goal} */
 function regression(p){
@@ -330,12 +393,12 @@ function mergeData(local, remote){
   function take(p){
     if(!p||!p.id)return;
     if(!byId[p.id]){
-      byId[p.id]={id:p.id,name:p.name,height:p.height,startWeight:p.startWeight,
+      byId[p.id]={id:p.id,name:p.name,height:p.height,birthYear:p.birthYear,startWeight:p.startWeight,
         goalWeight:p.goalWeight,goalDate:p.goalDate,records:(p.records||[]).slice()};
       order.push(p.id);
     }else{
       const t=byId[p.id];
-      ["name","height","startWeight","goalWeight","goalDate"].forEach(k=>{ if(t[k]==null&&p[k]!=null)t[k]=p[k]; });
+      ["name","height","birthYear","startWeight","goalWeight","goalDate"].forEach(k=>{ if(t[k]==null&&p[k]!=null)t[k]=p[k]; });
       const seen=new Set(t.records.map(r=>r.date));
       (p.records||[]).forEach(r=>{ if(!seen.has(r.date)){ t.records.push(r); seen.add(r.date); } });
     }
@@ -468,10 +531,16 @@ function renderPerson(v,p){
 
   // bmi
   if(bmi!=null){
+    let badge, caption;
+    if(isYouth(p)){
+      badge='<span class="bmi-badge" style="background:#64748b">청소년</span>';
+      caption='<span class="small muted">18세 미만은 연령·성별 백분위 기준</span>';
+    }else{
+      badge='<span class="bmi-badge" style="background:'+cat.c+'">'+cat.t+'</span>';
+      caption='<span class="small muted">'+cat.t+' '+cat.range+'</span>';
+    }
     html+='<div class="bmi-row"><span class="small muted">BMI</span>'+
-      '<b style="font-size:18px">'+bmi.toFixed(1)+'</b>'+
-      '<span class="bmi-badge" style="background:'+cat.c+'">'+cat.t+'</span>'+
-      '<span class="small muted">'+cat.t+' '+cat.range+'</span></div>';
+      '<b style="font-size:18px">'+bmi.toFixed(1)+'</b>'+badge+caption+'</div>';
   }
   html+='</div>';
 
@@ -538,33 +607,70 @@ function rangeBtns(){
 }
 
 function paceFeedback(p){
-  const reg=regression(p);
-  if(!reg||!p.goalWeight){ return '<div class="pace neutral">추세 분석을 위해 기록을 2개 이상 입력하세요.</div>'; }
   const last=latest(p);
-  if(reg.slope>=-0.0005 && p.goalWeight<last.weight){
-    return '<div class="pace bad">현재 추세로는 감량이 정체 상태입니다. 목표 도달이 어려워요.</div>';
+  const reg=regression(p);
+  if(!reg||!last){ return '<div class="pace neutral">추세 분석을 위해 기록을 2개 이상 입력하세요.</div>'; }
+
+  // 주당 변화량
+  const weekly=reg.slope*7;
+  const wkAbs=round1(Math.abs(weekly)).toFixed(1);
+  const dir = weekly<-0.01 ? "감량" : weekly>0.01 ? "증량" : "유지";
+  const trendLine = dir==="유지"
+      ? '최근 추세: <b>거의 변화 없음</b>'
+      : '최근 추세: <b>주당 '+(weekly>0?"+":"-")+wkAbs+'kg</b> ('+dir+')';
+
+  // 건강한 감량 속도 안내 (주당 체중의 1% 초과로 빠질 때)
+  let safety='';
+  if(weekly<0 && last.weight>0){
+    const pctWk=Math.abs(weekly)/last.weight*100;
+    if(pctWk>1.0){
+      safety='<div class="pace neutral" style="margin-top:8px">주당 체중의 1%(약 '+round1(last.weight*0.01).toFixed(1)+'kg) 이내의 감량이 더 안정적으로 유지되는 편이에요.</div>';
+    }
   }
-  // days from x0 to reach goal: goal = slope*x + intercept
+
+  if(p.goalWeight==null){
+    return '<div class="pace neutral">'+trendLine+'</div>'+safety;
+  }
+
+  const losing  = p.goalWeight < last.weight - 0.05;   // 목표가 더 가벼움
+  const gaining = p.goalWeight > last.weight + 0.05;   // 목표가 더 무거움
+
+  // 이미 달성
+  if(!losing && !gaining){
+    return '<div class="pace">목표 체중을 달성했습니다! 잘하셨어요.</div>'+safety;
+  }
+
+  // 목표와 같은 방향으로 움직이고 있는가
+  const towardGoal = (losing && weekly<0) || (gaining && weekly>0);
+  if(!towardGoal){
+    const msg = losing ? '현재 추세로는 감량이 정체/역행 중이라 목표 도달이 어려워요.'
+                       : '현재 추세로는 증량이 정체/역행 중이라 목표 도달이 어려워요.';
+    return '<div class="pace neutral">'+trendLine+'</div>'+
+           '<div class="pace bad" style="margin-top:8px">'+msg+'</div>'+safety;
+  }
+
+  // 도달 예상일
   const xGoal=(p.goalWeight-reg.intercept)/reg.slope;
-  if(!isFinite(xGoal)){ return '<div class="pace neutral">추세를 계산할 수 없습니다.</div>'; }
-  const x0date=new Date(reg.x0);
-  const reach=new Date(x0date.getTime()+xGoal*86400000);
-  const reachStr=(reach.getMonth()+1)+"월 "+reach.getDate()+"일";
-  if((p.goalWeight<last.weight && reg.slope>=0) || xGoal<reg.lastX){
-    // already passed or wrong direction
-    if(last.weight<=p.goalWeight) return '<div class="pace">목표 체중을 이미 달성했습니다! 잘하셨어요.</div>';
-  }
-  if(!p.goalDate){
-    return '<div class="pace">이 속도면 <b>'+reachStr+'</b> 목표 도달 예상.</div>';
-  }
-  const goalReach=daysBetween(todayStr(),reach.toISOString().slice(0,10));
-  const diff=daysBetween(reach.toISOString().slice(0,10),p.goalDate); // goalDate - reach
-  if(last.weight<=p.goalWeight) return '<div class="pace">목표 체중을 이미 달성했습니다! 잘하셨어요.</div>';
-  if(diff>=0){
-    return '<div class="pace">이 속도면 <b>'+reachStr+'</b> 도달 — 목표보다 <b>'+diff+'일 빠름</b>.</div>';
+  const reach=new Date(reg.x0 + xGoal*86400000);
+  const reachDateStr=dateStr(reach);
+  const daysToReach=daysBetween(todayStr(), reachDateStr);
+
+  let goalLine, cls;
+  if(daysToReach>365){
+    goalLine = p.goalDate
+      ? '이 속도면 <b>1년 이상</b> 소요 예상 — 목표일 안에는 어려워요.'
+      : '이 속도면 <b>1년 이상</b> 소요 예상.';
+    cls = p.goalDate ? 'pace bad' : 'pace neutral';
+  }else if(!p.goalDate){
+    goalLine = '이 속도면 <b>'+fmtMD(reachDateStr)+'</b> 도달 예상.';
+    cls = 'pace';
   }else{
-    return '<div class="pace bad">이 속도면 <b>'+reachStr+'</b> 도달 — 목표보다 <b>'+(-diff)+'일 늦음</b>.</div>';
+    const diff=daysBetween(reachDateStr, p.goalDate); // +면 목표보다 빠름
+    if(diff>=0){ goalLine='이 속도면 <b>'+fmtMD(reachDateStr)+'</b> 도달 — 목표보다 <b>'+diff+'일 빠름</b>.'; cls='pace'; }
+    else       { goalLine='이 속도면 <b>'+fmtMD(reachDateStr)+'</b> 도달 — 목표보다 <b>'+(-diff)+'일 늦음</b>.'; cls='pace bad'; }
   }
+  return '<div class="pace neutral">'+trendLine+'</div>'+
+         '<div class="'+cls+'" style="margin-top:8px">'+goalLine+'</div>'+safety;
 }
 
 function upsertRecord(p,date,weight,memo){
@@ -580,6 +686,20 @@ function filterByRange(recs){
   const lastDate=parseDate(recs[recs.length-1].date).getTime();
   const cut=lastDate-(ui.range-1)*86400000;
   return recs.filter(r=>parseDate(r.date).getTime()>=cut);
+}
+
+/* 7일 이동평균: 각 날짜 기준 직전 windowDays일 구간 평균(기록 간격이 불규칙해도 OK) */
+function movingAvg(recs, windowDays){
+  return recs.map((r,i)=>{
+    const end=parseDate(r.date).getTime();
+    const start=end-(windowDays-1)*86400000;
+    let sum=0,cnt=0;
+    for(let j=0;j<=i;j++){
+      const t=parseDate(recs[j].date).getTime();
+      if(t>=start && t<=end){ sum+=recs[j].weight; cnt++; }
+    }
+    return {t:end, v:cnt?sum/cnt:r.weight};
+  });
 }
 
 function drawPersonChart(wrap,p){
@@ -603,13 +723,13 @@ function drawPersonChart(wrap,p){
   const yticks=4;
   for(let i=0;i<=yticks;i++){
     const val=minY+(spanY*i/yticks); const y=py(val);
-    svg+='<line x1="'+padL+'" y1="'+y+'" x2="'+(W-padR)+'" y2="'+y+'" stroke="#eef2f7" stroke-width="1"/>';
-    svg+='<text x="'+(padL-6)+'" y="'+(y+4)+'" font-size="11" fill="#94a3b8" text-anchor="end">'+val.toFixed(1)+'</text>';
+    svg+='<line x1="'+padL+'" y1="'+y+'" x2="'+(W-padR)+'" y2="'+y+'" stroke="'+C_GRID+'" stroke-width="1"/>';
+    svg+='<text x="'+(padL-6)+'" y="'+(y+4)+'" font-size="11" fill="'+C_AXIS+'" text-anchor="end">'+val.toFixed(1)+'</text>';
   }
   // x labels (first / mid / last)
   [0,Math.floor(recs.length/2),recs.length-1].filter((v,i,a)=>a.indexOf(v)===i).forEach(idx=>{
     const r=recs[idx]; const x=px(parseDate(r.date).getTime());
-    svg+='<text x="'+x+'" y="'+(H-12)+'" font-size="10" fill="#94a3b8" text-anchor="middle">'+fmtMD(r.date)+'</text>';
+    svg+='<text x="'+x+'" y="'+(H-12)+'" font-size="10" fill="'+C_AXIS+'" text-anchor="middle">'+fmtMD(r.date)+'</text>';
   });
   // goal line
   if(p.goalWeight!=null){
@@ -639,7 +759,14 @@ function drawPersonChart(wrap,p){
        '<stop offset="0" stop-color="#10b981" stop-opacity=".22"/>'+
        '<stop offset="1" stop-color="#10b981" stop-opacity="0"/></linearGradient></defs>';
   svg+='<path d="'+area+'" fill="url(#g1)"/>';
-  svg+='<path d="'+d+'" fill="none" stroke="#10b981" stroke-width="2.5" stroke-linejoin="round" stroke-linecap="round"/>';
+  svg+='<path d="'+d+'" fill="none" stroke="#10b981" stroke-width="2" stroke-linejoin="round" stroke-linecap="round" opacity=".55"/>';
+  // 7일 이동평균 (일별 변동을 완만하게 — 진짜 추세 파악용)
+  if(recs.length>=3){
+    const ma=movingAvg(recs,7);
+    let dm='';
+    ma.forEach((m,i)=>{ dm+=(i===0?"M":"L")+px(m.t).toFixed(1)+" "+py(m.v).toFixed(1)+" "; });
+    svg+='<path d="'+dm+'" fill="none" stroke="#8b5cf6" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>';
+  }
   // points
   recs.forEach(r=>{
     const x=px(parseDate(r.date).getTime()), y=py(r.weight);
@@ -647,7 +774,8 @@ function drawPersonChart(wrap,p){
   });
   svg+='</svg>';
   // legend
-  svg+='<div class="legend"><span><span class="dot" style="background:#10b981"></span>체중</span>'+
+  svg+='<div class="legend"><span><span class="dot" style="background:#10b981"></span>체중(일별)</span>'+
+       '<span><span class="dot" style="background:#8b5cf6"></span>7일 평균</span>'+
        '<span><span class="dot" style="background:#f59e0b"></span>목표</span>'+
        '<span><span class="dot" style="background:#3b82f6"></span>추세</span></div>';
   wrap.innerHTML=svg;
@@ -724,19 +852,19 @@ function drawCompareChart(wrap){
   const yticks=4;
   for(let i=0;i<=yticks;i++){
     const val=minY+(spanY*i/yticks); const y=py(val);
-    svg+='<line x1="'+padL+'" y1="'+y+'" x2="'+(W-padR)+'" y2="'+y+'" stroke="#eef2f7" stroke-width="1"/>';
+    svg+='<line x1="'+padL+'" y1="'+y+'" x2="'+(W-padR)+'" y2="'+y+'" stroke="'+C_GRID+'" stroke-width="1"/>';
     const lbl=ui.cmpMode==="delta"?((val>0?"+":"")+val.toFixed(1)):val.toFixed(1);
-    svg+='<text x="'+(padL-6)+'" y="'+(y+4)+'" font-size="11" fill="#94a3b8" text-anchor="end">'+lbl+'</text>';
+    svg+='<text x="'+(padL-6)+'" y="'+(y+4)+'" font-size="11" fill="'+C_AXIS+'" text-anchor="end">'+lbl+'</text>';
   }
   if(ui.cmpMode==="delta"){
     const zy=py(0);
-    svg+='<line x1="'+padL+'" y1="'+zy+'" x2="'+(W-padR)+'" y2="'+zy+'" stroke="#cbd5e1" stroke-width="1.5"/>';
+    svg+='<line x1="'+padL+'" y1="'+zy+'" x2="'+(W-padR)+'" y2="'+zy+'" stroke="'+C_ZERO+'" stroke-width="1.5"/>';
   }
   // x labels
   const allDates=[...new Set(series.flatMap(s=>s.pts.map(p=>p.date)))].sort();
   [allDates[0],allDates[Math.floor(allDates.length/2)],allDates[allDates.length-1]].filter((v,i,a)=>v&&a.indexOf(v)===i).forEach(dt=>{
     const x=px(parseDate(dt).getTime());
-    svg+='<text x="'+x+'" y="'+(H-12)+'" font-size="10" fill="#94a3b8" text-anchor="middle">'+fmtMD(dt)+'</text>';
+    svg+='<text x="'+x+'" y="'+(H-12)+'" font-size="10" fill="'+C_AXIS+'" text-anchor="middle">'+fmtMD(dt)+'</text>';
   });
   // lines
   series.forEach(s=>{
@@ -758,6 +886,7 @@ function openPerson(p){
   $("#personTitle").textContent=p?"사람 설정":"사람 추가";
   $("#pName").value=p?p.name:"";
   $("#pHeight").value=p&&p.height!=null?p.height:"";
+  $("#pBirthYear").value=p&&p.birthYear!=null?p.birthYear:"";
   $("#pStart").value=p&&p.startWeight!=null?p.startWeight:"";
   $("#pGoal").value=p&&p.goalWeight!=null?p.goalWeight:"";
   $("#pGoalDate").value=p&&p.goalDate?p.goalDate:"";
@@ -771,10 +900,19 @@ $("#btnSavePerson").onclick=()=>{
   const obj={
     name,
     height:val($("#pHeight").value),
+    birthYear:yearVal($("#pBirthYear").value),
     startWeight:val($("#pStart").value),
     goalWeight:val($("#pGoal").value),
     goalDate:$("#pGoalDate").value||null
   };
+  // 목표 체중이 성인 저체중(BMI<18.5)에 해당하면 부드럽게 확인
+  if(obj.height && obj.goalWeight){
+    const gbmi=bmiOf(obj.goalWeight,obj.height);
+    const adult = obj.birthYear==null || (new Date().getFullYear()-obj.birthYear)>=19;
+    if(adult && gbmi!=null && gbmi<18.5){
+      if(!confirm("설정한 목표 체중은 BMI "+gbmi.toFixed(1)+" (저체중)에 해당해요. 그대로 저장할까요?")) return;
+    }
+  }
   if(personEditId){
     const p=state.people.find(x=>x.id===personEditId);
     Object.assign(p,obj);
@@ -796,6 +934,7 @@ $("#btnDeletePerson").onclick=()=>{
   }
 };
 function val(s){const n=parseFloat(s);return isNaN(n)?null:n;}
+function yearVal(s){const n=parseInt(s,10);return (n>=1900&&n<=new Date().getFullYear())?n:null;}
 
 /* record edit */
 let recEditPersonId=null, recEditOrigDate=null;
@@ -851,6 +990,50 @@ $("#btnPullCloud").onclick=async()=>{
     setSyncLabel("동기화됨 · "+nowTimeLabel()); toast("불러오기 완료");
   }catch(e){ setSyncLabel("불러오기 실패"); toast("불러오기 실패: "+e.message); }
   closeCloud();
+};
+
+/* ============ 백업 / 내보내기 ============ */
+$("#btnBackup").onclick=()=>$("#backupOverlay").classList.add("show");
+function closeBackup(){$("#backupOverlay").classList.remove("show");}
+
+function downloadFile(filename, text, mime){
+  const blob=new Blob([text],{type:mime||"text/plain;charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a"); a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+}
+function csvCell(s){ s=String(s==null?"":s); return /[",\r\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; }
+
+$("#btnExportJSON").onclick=()=>{
+  downloadFile("wf4_backup_"+todayStr()+".json", JSON.stringify(state,null,2), "application/json");
+  toast("JSON 백업 내보냄");
+};
+$("#btnExportCSV").onclick=()=>{
+  const rows=[["이름","날짜","체중(kg)","메모"]];
+  state.people.forEach(p=>{ sortedRecords(p).forEach(r=>{ rows.push([p.name, r.date, fmtKg(r.weight), r.memo||""]); }); });
+  if(rows.length===1){ toast("내보낼 기록이 없습니다"); return; }
+  const csv="\uFEFF"+rows.map(r=>r.map(csvCell).join(",")).join("\r\n");   // \uFEFF: 엑셀 한글 깨짐 방지
+  downloadFile("wf4_records_"+todayStr()+".csv", csv, "text/csv;charset=utf-8");
+  toast("CSV 내보냄");
+};
+$("#btnImportJSON").onclick=()=>$("#importFile").click();
+$("#importFile").onchange=e=>{
+  const file=e.target.files&&e.target.files[0]; e.target.value="";
+  if(!file) return;
+  const reader=new FileReader();
+  reader.onload=async()=>{
+    try{
+      const obj=JSON.parse(reader.result);
+      if(!obj||!Array.isArray(obj.people)) throw new Error("형식이 올바르지 않습니다");
+      if(!confirm("가져오면 현재 데이터와 병합됩니다(덮어쓰지 않음). 진행할까요?")) return;
+      state=mergeData(state, obj);
+      persistLocal(); render();
+      try{ await save(); }catch(_){}
+      toast("가져오기 완료(병합)"); closeBackup();
+    }catch(err){ toast("가져오기 실패: "+err.message); }
+  };
+  reader.readAsText(file);
 };
 
 /* close overlay on backdrop click — only when the press STARTED on the backdrop
