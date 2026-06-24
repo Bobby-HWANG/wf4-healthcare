@@ -252,11 +252,15 @@ function latest(p){const r=sortedRecords(p);return r.length?r[r.length-1]:null;}
 /* BMI */
 function bmiOf(weight,height){if(!weight||!height)return null;const m=height/100;return weight/(m*m);}
 function bmiCat(b){
-  if(b==null)return {t:"-",c:"var(--muted)"};
-  if(b<18.5)return {t:"저체중",c:"#3b82f6"};
-  if(b<23)return {t:"정상",c:"#10b981"};
-  if(b<25)return {t:"과체중",c:"#f59e0b"};
-  return {t:"비만",c:"#ef4444"};
+  // 대한비만학회(아시아-태평양) 기준 세분류
+  if(b==null)return {t:"-",c:"var(--muted)",range:""};
+  if(b<18.5) return {t:"저체중",          c:"#3b82f6", range:"18.5 미만"};
+  if(b<23)   return {t:"정상",            c:"#10b981", range:"18.5~22.9"};
+  if(b<25)   return {t:"과체중",          c:"#f59e0b", range:"23~24.9"};
+  if(b<30)   return {t:"경도비만 (1단계)", c:"#f97316", range:"25~29.9"};
+  if(b<35)   return {t:"중등도비만 (2단계)",c:"#ef4444", range:"30~34.9"};
+  if(b<40)   return {t:"고도비만 (3단계)", c:"#dc2626", range:"35~39.9"};
+  return            {t:"초고도비만",       c:"#991b1b", range:"40 이상"};
 }
 
 /* 선형회귀: records -> {slope(kg/day), predictDate to goal} */
@@ -286,7 +290,16 @@ function persistLocal(){
 }
 async function save(){
   persistLocal();
-  if(cfg.bin&&cfg.key){ pushCloud(); }
+  if(cfg.bin&&cfg.key){
+    if(isSyncing){ pushCloud(); return; }
+    isSyncing=true;
+    try{
+      try{ await pullMerge(); }catch(e){}            // 원격 변경 먼저 병합 (덮어쓰기 방지)
+      state.updatedAt=new Date().toISOString();      // 이번 편집을 최신으로
+      localStorage.setItem(LS_DATA,JSON.stringify(state));
+      await pushCloud();
+    } finally { isSyncing=false; }
+  }
 }
 function setSyncLabel(txt){$("#syncState").textContent=txt;}
 
@@ -303,20 +316,79 @@ async function pushCloud(){
     setSyncLabel("동기화됨 · "+new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"}));
   }catch(e){ setSyncLabel("동기화 실패(로컬 보관됨)"); }
 }
-async function pullCloud(silent){
-  if(!cfg.bin||!cfg.key){ if(!silent)toast("Bin ID와 API Key를 먼저 입력하세요"); return; }
-  setSyncLabel("불러오는 중...");
-  try{
-    const res=await fetch("https://api.jsonbin.io/v3/b/"+cfg.bin+"/latest",{
-      headers:{"X-Master-Key":cfg.key}
-    });
-    if(!res.ok)throw new Error("HTTP "+res.status);
-    const json=await res.json();
-    const rec=json.record;
-    if(rec&&rec.people){ state=rec; persistLocal(); render(); toast("불러오기 완료"); }
-    setSyncLabel("동기화됨 · "+new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"}));
-  }catch(e){ setSyncLabel("불러오기 실패"); if(!silent)toast("불러오기 실패: "+e.message); }
+/* ---- 자동 동기화 (PC·폰 양방향) ---- */
+let isSyncing=false, autoTimer=null;
+function nowTimeLabel(){ return new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"}); }
+
+// 두 상태를 데이터 손실 없이 병합: 사람·기록 합집합, 같은 날짜는 더 최근(updatedAt) 상태 우선
+function mergeData(local, remote){
+  const lt=new Date((local&&local.updatedAt)||0).getTime();
+  const rt=new Date((remote&&remote.updatedAt)||0).getTime();
+  const primary  = lt>=rt ? local  : remote;
+  const secondary= lt>=rt ? remote : local;
+  const byId={}, order=[];
+  function take(p){
+    if(!p||!p.id)return;
+    if(!byId[p.id]){
+      byId[p.id]={id:p.id,name:p.name,height:p.height,startWeight:p.startWeight,
+        goalWeight:p.goalWeight,goalDate:p.goalDate,records:(p.records||[]).slice()};
+      order.push(p.id);
+    }else{
+      const t=byId[p.id];
+      ["name","height","startWeight","goalWeight","goalDate"].forEach(k=>{ if(t[k]==null&&p[k]!=null)t[k]=p[k]; });
+      const seen=new Set(t.records.map(r=>r.date));
+      (p.records||[]).forEach(r=>{ if(!seen.has(r.date)){ t.records.push(r); seen.add(r.date); } });
+    }
+  }
+  (primary&&primary.people||[]).forEach(take);
+  (secondary&&secondary.people||[]).forEach(take);
+  const people=order.map(id=>{ const p=byId[id]; p.records.sort((a,b)=>a.date<b.date?-1:1); return p; });
+  return { people, updatedAt:new Date(Math.max(lt,rt)||Date.now()).toISOString() };
 }
+
+// 원격에서 받아 로컬과 병합. 로컬 데이터가 바뀌면 true
+async function pullMerge(){
+  if(!cfg.bin||!cfg.key) return false;
+  const res=await fetch("https://api.jsonbin.io/v3/b/"+cfg.bin+"/latest",{headers:{"X-Master-Key":cfg.key}});
+  if(!res.ok) throw new Error("HTTP "+res.status);
+  const json=await res.json();
+  const remote=json.record;
+  if(!remote||!remote.people) return false;
+  const before=JSON.stringify(state.people||[]);
+  const merged=mergeData(state, remote);
+  if(JSON.stringify(merged.people)!==before){
+    state=merged; localStorage.setItem(LS_DATA,JSON.stringify(state));
+    return true;
+  }
+  return false;
+}
+
+// 사용자가 편집 중이면 자동 갱신으로 화면을 흔들지 않음
+function isEditing(){
+  if(document.querySelector(".overlay.show")) return true;
+  const a=document.activeElement;
+  return !!(a && (a.tagName==="INPUT"||a.tagName==="SELECT"||a.tagName==="TEXTAREA"));
+}
+
+async function autoSyncTick(){
+  if(isSyncing || !cfg.bin || !cfg.key) return;
+  isSyncing=true;
+  try{
+    const changed=await pullMerge();
+    if(changed && !isEditing()) render();
+    setSyncLabel("동기화됨 · "+nowTimeLabel());
+  }catch(e){ setSyncLabel("동기화 대기 중"); }
+  finally{ isSyncing=false; }
+}
+
+function startAutoSync(){
+  if(autoTimer){ clearInterval(autoTimer); autoTimer=null; }
+  if(!cfg.bin||!cfg.key) return;
+  autoTimer=setInterval(autoSyncTick, 15000);
+}
+
+window.addEventListener("focus", autoSyncTick);
+document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) autoSyncTick(); });
 
 /* ============ 렌더 ============ */
 function render(){ renderTabs(); renderView(); }
@@ -399,7 +471,7 @@ function renderPerson(v,p){
     html+='<div class="bmi-row"><span class="small muted">BMI</span>'+
       '<b style="font-size:18px">'+bmi.toFixed(1)+'</b>'+
       '<span class="bmi-badge" style="background:'+cat.c+'">'+cat.t+'</span>'+
-      '<span class="small muted">정상 18.5~22.9</span></div>';
+      '<span class="small muted">'+cat.t+' '+cat.range+'</span></div>';
   }
   html+='</div>';
 
@@ -758,13 +830,27 @@ $("#btnSaveCloud").onclick=async()=>{
   cfg.bin=$("#cfgBin").value.trim(); cfg.key=$("#cfgKey").value.trim();
   localStorage.setItem(LS_CFG,JSON.stringify(cfg));
   closeCloud();
-  if(cfg.bin&&cfg.key){ await pushCloud(); toast("클라우드 연결됨"); }
-  else{ setSyncLabel("로컬 모드"); toast("로컬 모드로 전환"); }
+  if(cfg.bin&&cfg.key){
+    setSyncLabel("동기화 중...");
+    try{ await pullMerge(); render(); }catch(e){}   // 기존 원격 데이터를 자동 병합 (불러오기 따로 불필요)
+    try{ await pushCloud(); }catch(e){}
+    startAutoSync();
+    toast("클라우드 연결됨 · 자동 동기화 시작");
+  }else{
+    startAutoSync();                                // cfg 없으면 타이머 정지
+    setSyncLabel("로컬 모드"); toast("로컬 모드로 전환");
+  }
 };
 $("#btnPullCloud").onclick=async()=>{
   cfg.bin=$("#cfgBin").value.trim(); cfg.key=$("#cfgKey").value.trim();
   localStorage.setItem(LS_CFG,JSON.stringify(cfg));
-  await pullCloud(false); closeCloud();
+  if(!cfg.bin||!cfg.key){ toast("Bin ID와 API Key를 먼저 입력하세요"); return; }
+  setSyncLabel("불러오는 중...");
+  try{
+    await pullMerge(); render(); startAutoSync();
+    setSyncLabel("동기화됨 · "+nowTimeLabel()); toast("불러오기 완료");
+  }catch(e){ setSyncLabel("불러오기 실패"); toast("불러오기 실패: "+e.message); }
+  closeCloud();
 };
 
 /* close overlay on backdrop click — only when the press STARTED on the backdrop
@@ -781,9 +867,14 @@ document.querySelectorAll(".overlay").forEach(o=>{
 /* ============ 초기화 ============ */
 function init(){
   loadLocal();
-  if(cfg.bin&&cfg.key){ setSyncLabel("동기화됨"); pullCloud(true); }
-  else setSyncLabel("로컬 모드");
-  render();
+  render();                                    // 먼저 로컬 데이터로 즉시 표시
+  if(cfg.bin&&cfg.key){
+    setSyncLabel("동기화 중...");
+    autoSyncTick();                            // 원격 병합 후 변경 시 자동 재렌더
+    startAutoSync();                           // 15초 주기 + 포커스 시 자동 동기화
+  }else{
+    setSyncLabel("로컬 모드");
+  }
 }
 init();
 </script>
