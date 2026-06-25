@@ -682,7 +682,7 @@ function renderPerson(v,p){
     else{ badge='<span class="bmi-badge" style="background:'+cat.c+'">'+cat.t+'</span>'; caption='<span class="small muted">'+cat.t+' '+cat.range+'</span>'; }
     html+='<div class="bmi-row"><span class="small muted">BMI</span><b class="tnum" style="font-size:18px">'+bmi.toFixed(1)+'</b>'+badge+caption;
     const wz=weightZone(p.height);
-    if(wz && !isYouth(p)) html+='<span class="range-pill tnum">표준 최대 '+wz.lo.toFixed(1)+' ~ 과체중 상한 '+wz.hi.toFixed(1)+'kg</span>';
+    if(wz && !isYouth(p)) html+='<span class="range-pill tnum">이상적인 몸무게 '+wz.lo.toFixed(1)+' ~ '+wz.hi.toFixed(1)+' kg</span>';
     html+='</div>';
   }
   html+='</div>';
