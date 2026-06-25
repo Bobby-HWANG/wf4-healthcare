@@ -61,18 +61,21 @@
   }
   header.app::after{content:""; position:absolute; left:0; right:0; bottom:0; height:1px; background:rgba(255,255,255,.12)}
   header.app .bar{display:flex; align-items:center; justify-content:space-between; gap:10px; padding:14px 16px; max-width:780px; margin:0 auto}
-  .brand{display:flex; align-items:center; gap:11px; min-width:0}
+  .brand{display:flex; align-items:center; gap:10px; min-width:0; flex:1 1 auto}
+  .brand>.bt{min-width:0}
   .logo{width:34px; height:34px; border-radius:11px; flex:0 0 auto;
     background:linear-gradient(160deg,rgba(255,255,255,.32),rgba(255,255,255,.08));
     border:1px solid rgba(255,255,255,.35); display:grid; place-items:center; box-shadow:inset 0 1px 2px rgba(255,255,255,.4)}
   .logo svg{width:19px; height:19px}
-  .brand h1{font-size:17px; margin:0; font-weight:800; letter-spacing:-.2px; white-space:nowrap}
+  .brand h1{font-size:16px; margin:0; font-weight:800; letter-spacing:-.2px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
   .brand .sub{font-size:11px; opacity:.85; margin-top:1px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
-  .hd-actions{display:flex; gap:7px; flex:0 0 auto}
+  .hd-actions{display:flex; gap:6px; flex:0 0 auto}
   .icon-btn{ background:rgba(255,255,255,.16); border:1px solid rgba(255,255,255,.22); color:#fff;
-    font-size:12.5px; padding:8px 12px; border-radius:11px; cursor:pointer; font-weight:700; backdrop-filter:blur(4px);
-    transition:background .15s, transform .1s}
-  .icon-btn:active{background:rgba(255,255,255,.3); transform:scale(.97)}
+    font-size:12px; padding:7px 11px; border-radius:11px; cursor:pointer; font-weight:700; backdrop-filter:blur(4px);
+    transition:background .15s, transform .1s; white-space:nowrap}
+  .icon-btn:active{background:rgba(255,255,255,.34); transform:scale(.96)}
+  .icon-btn.primary{background:rgba(255,255,255,.95); color:var(--hd2); border-color:#fff; box-shadow:0 2px 8px rgba(0,0,0,.12)}
+  .icon-btn.primary:active{background:#fff}
 
   /* tabs */
   .tabs{display:flex; gap:7px; overflow-x:auto; padding:14px 0 4px; scrollbar-width:none}
@@ -240,12 +243,13 @@
       <span class="logo">
         <svg viewBox="0 0 24 24" fill="none"><path d="M12 21s-7-4.6-7-10a4 4 0 0 1 7-2.6A4 4 0 0 1 19 11c0 5.4-7 10-7 10Z" fill="#fff" opacity=".95"/><path d="M5 12h3l1.5-3 2 6 1.5-3H19" stroke="var(--hd2)" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg>
       </span>
-      <div>
+      <div class="bt">
         <h1>WF4 Healthcare</h1>
         <div class="sub" id="syncState">로컬 모드</div>
       </div>
     </div>
     <div class="hd-actions">
+      <button class="icon-btn primary" id="btnShare">공유</button>
       <button class="icon-btn" id="btnBackup">백업</button>
       <button class="icon-btn" id="btnCloud">동기화</button>
     </div>
@@ -345,7 +349,7 @@ const LS_DATA="wf4_data", LS_CFG="wf4_cfg";
 const MAX_PEOPLE=4;
 const COLOR_HEX=["#0d9488","#3b82f6","#f59e0b","#a855f7"];
 
-let state={ people:[], updatedAt:null };
+let state={ people:[], delPeople:{}, updatedAt:null };
 let cfg={ bin:"", key:"" };
 let ui={ tab:"compare", range:30, cmpMode:"delta", metric:"weight", showMetricInput:false };
 
@@ -400,7 +404,7 @@ function bmiCat(b){
 }
 function ageOf(p){ if(!p||p.birthYear==null) return null; const a=new Date().getFullYear()-p.birthYear; return (a>=0&&a<=120)?a:null; }
 function isYouth(p){ const a=ageOf(p); return a!=null && a<19; }
-function healthyRange(height){ if(!height) return null; const m=height/100; return {lo:18.5*m*m, hi:22.9*m*m}; }
+function weightZone(height){ if(!height) return null; const m=height/100; return {lo:22.9*m*m, hi:24.9*m*m}; } // 표준(정상) 상한 ~ 과체중 상한
 
 /* 선형회귀 (지표 key 기준) */
 function regressionKey(p,key){
@@ -514,6 +518,8 @@ function buildInsights(p){
 function loadLocal(){
   try{const d=JSON.parse(localStorage.getItem(LS_DATA));if(d&&d.people)state=d;}catch(e){}
   try{const c=JSON.parse(localStorage.getItem(LS_CFG));if(c)cfg=c;}catch(e){}
+  if(!state.delPeople) state.delPeople={};
+  (state.people||[]).forEach(p=>{ if(!p.del) p.del={}; });
 }
 function persistLocal(){ state.updatedAt=new Date().toISOString(); localStorage.setItem(LS_DATA,JSON.stringify(state)); }
 async function save(){
@@ -540,28 +546,42 @@ async function pushCloud(){
 let isSyncing=false, autoTimer=null;
 function nowTimeLabel(){ return new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"}); }
 
+/* 시각(u) + 삭제표식(tombstone) 기반 병합 — 삭제/수정이 부활하지 않도록 "가장 최근 동작이 이김" */
 function mergeData(local, remote){
-  const lt=new Date((local&&local.updatedAt)||0).getTime();
-  const rt=new Date((remote&&remote.updatedAt)||0).getTime();
-  const primary  = lt>=rt ? local  : remote;
-  const secondary= lt>=rt ? remote : local;
-  const byId={}, order=[];
-  function take(p){
-    if(!p||!p.id)return;
-    if(!byId[p.id]){
-      byId[p.id]={id:p.id,name:p.name,height:p.height,birthYear:p.birthYear,startWeight:p.startWeight,
-        goalWeight:p.goalWeight,goalDate:p.goalDate,records:(p.records||[]).slice()};
-      order.push(p.id);
-    }else{
-      const t=byId[p.id];
-      ["name","height","birthYear","startWeight","goalWeight","goalDate"].forEach(k=>{ if(t[k]==null&&p[k]!=null)t[k]=p[k]; });
-      const seen=new Set(t.records.map(r=>r.date));
-      (p.records||[]).forEach(r=>{ if(!seen.has(r.date)){ t.records.push(r); seen.add(r.date); } });
-    }
-  }
-  (primary&&primary.people||[]).forEach(take); (secondary&&secondary.people||[]).forEach(take);
-  const people=order.map(id=>{ const p=byId[id]; p.records.sort((a,b)=>a.date<b.date?-1:1); return p; });
-  return { people, updatedAt:new Date(Math.max(lt,rt)||Date.now()).toISOString() };
+  const sides=[local,remote];
+  // 사람 단위 삭제표식 (id -> 삭제시각)
+  const delPeople={};
+  sides.forEach(s=>{ const m=(s&&s.delPeople)||{}; for(const k in m) delPeople[k]=Math.max(delPeople[k]||0, m[k]||0); });
+  // 사람 id 순서: local 먼저, 없는 것 remote에서 추가
+  const order=[]; const seenIds=new Set();
+  sides.forEach(s=>{ (s&&s.people||[]).forEach(p=>{ if(p&&p.id&&!seenIds.has(p.id)){ seenIds.add(p.id); order.push(p.id); } }); });
+  const findP=(s,id)=>(s&&s.people||[]).find(p=>p.id===id);
+  const out=[];
+  order.forEach(id=>{
+    const a=findP(local,id), b=findP(remote,id);
+    const au=(a&&a.u)||0, bu=(b&&b.u)||0;
+    const pri = au>=bu ? a : b, sec = au>=bu ? b : a;
+    const merged={ id, u:Math.max(au,bu) };
+    ["name","height","birthYear","startWeight","goalWeight","goalDate"].forEach(k=>{
+      merged[k] = (pri && pri[k]!=null) ? pri[k] : (sec && sec[k]!=null ? sec[k] : null);
+    });
+    // 기록 병합: 날짜별로 u가 큰 쪽 채택
+    const recMap={};
+    [a,b].forEach(s=>{ (s&&s.records||[]).forEach(r=>{ if(!r||!r.date)return; const ex=recMap[r.date]; if(!ex || (r.u||0)>=(ex.u||0)) recMap[r.date]=r; }); });
+    // 기록 삭제표식 병합 (날짜 -> 삭제시각)
+    const del={};
+    [a,b].forEach(s=>{ const m=(s&&s.del)||{}; for(const k in m) del[k]=Math.max(del[k]||0, m[k]||0); });
+    // 삭제표식이 기록 수정시각보다 최근이면 제외
+    const records=[];
+    for(const date in recMap){ const r=recMap[date]; if((del[date]||0) > (r.u||0)) continue; records.push(r); }
+    records.sort((x,y)=>x.date<y.date?-1:1);
+    merged.records=records; merged.del=del;
+    // 사람 삭제표식: 사람의 최근 활동(필드/기록)보다 최근이면 사람 제외
+    const activity=Math.max(merged.u||0, records.reduce((mx,r)=>Math.max(mx,r.u||0),0));
+    if((delPeople[id]||0) > activity) return;
+    out.push(merged);
+  });
+  return { people:out, delPeople, updatedAt:new Date(Math.max(new Date((local&&local.updatedAt)||0).getTime(), new Date((remote&&remote.updatedAt)||0).getTime())||Date.now()).toISOString() };
 }
 async function pullMerge(){
   if(!cfg.bin||!cfg.key) return false;
@@ -569,7 +589,7 @@ async function pullMerge(){
   if(!res.ok) throw new Error("HTTP "+res.status);
   const json=await res.json(); const remote=json.record;
   if(!remote||!remote.people) return false;
-  const before=JSON.stringify(state.people||[]);
+  const before=JSON.stringify(mergeData(state, state).people);   // 자기 자신도 동일 정규화 → 키 순서 무관 비교
   const merged=mergeData(state, remote);
   if(JSON.stringify(merged.people)!==before){ state=merged; localStorage.setItem(LS_DATA,JSON.stringify(state)); return true; }
   return false;
@@ -661,8 +681,8 @@ function renderPerson(v,p){
     if(isYouth(p)){ badge='<span class="bmi-badge" style="background:#64748b">청소년</span>'; caption='<span class="small muted">18세 미만은 연령·성별 백분위 기준</span>'; }
     else{ badge='<span class="bmi-badge" style="background:'+cat.c+'">'+cat.t+'</span>'; caption='<span class="small muted">'+cat.t+' '+cat.range+'</span>'; }
     html+='<div class="bmi-row"><span class="small muted">BMI</span><b class="tnum" style="font-size:18px">'+bmi.toFixed(1)+'</b>'+badge+caption;
-    const hr=healthyRange(p.height);
-    if(hr && !isYouth(p)) html+='<span class="range-pill tnum">건강 체중 '+hr.lo.toFixed(1)+'~'+hr.hi.toFixed(1)+'kg</span>';
+    const wz=weightZone(p.height);
+    if(wz && !isYouth(p)) html+='<span class="range-pill tnum">표준 최대 '+wz.lo.toFixed(1)+' ~ 과체중 상한 '+wz.hi.toFixed(1)+'kg</span>';
     html+='</div>';
   }
   html+='</div>';
@@ -779,7 +799,7 @@ function renderPerson(v,p){
   v.querySelectorAll(".rangebar button").forEach(b=>b.onclick=()=>{ ui.range=parseInt(b.dataset.range); renderView(); });
   v.querySelectorAll("[data-edit]").forEach(b=>b.onclick=()=>openRec(p,b.dataset.edit));
   v.querySelectorAll("[data-del]").forEach(b=>b.onclick=()=>{
-    if(confirm(b.dataset.del+" 기록을 삭제할까요?")){ p.records=p.records.filter(r=>r.date!==b.dataset.del); save(); renderView(); toast("삭제됨"); }
+    if(confirm(b.dataset.del+" 기록을 삭제할까요?")){ deleteRecord(p, b.dataset.del); save(); renderView(); toast("삭제됨"); }
   });
   $("#btnEditPerson").onclick=()=>openPerson(p);
 }
@@ -818,8 +838,15 @@ function paceFeedback(p){
 
 function upsertRecord(p, rec){
   if(!p.records)p.records=[];
+  rec.u=Date.now();                                  // 수정 시각 기록 (병합 우선순위용)
   const ex=p.records.find(r=>r.date===rec.date);
   if(ex){ Object.assign(ex, rec); } else p.records.push(rec);
+  if(p.del) delete p.del[rec.date];                  // 같은 날짜를 다시 입력하면 삭제표식 해제
+}
+function deleteRecord(p, date){                       // 삭제표식을 남겨 동기화 때 부활 방지
+  if(!p.records)p.records=[];
+  p.records=p.records.filter(r=>r.date!==date);
+  p.del=p.del||{}; p.del[date]=Date.now();
 }
 
 /* ---------- 지표 차트 ---------- */
@@ -1009,13 +1036,16 @@ $("#btnSavePerson").onclick=()=>{
     const adult = obj.birthYear==null || (new Date().getFullYear()-obj.birthYear)>=19;
     if(adult && gbmi!=null && gbmi<18.5){ if(!confirm("설정한 목표 체중은 BMI "+gbmi.toFixed(1)+" (저체중)에 해당해요. 그대로 저장할까요?")) return; }
   }
-  if(personEditId){ Object.assign(state.people.find(x=>x.id===personEditId),obj); }
-  else{ if(state.people.length>=MAX_PEOPLE){toast("최대 4명까지 가능합니다");return;} const id=uid(); state.people.push({id,...obj,records:[]}); ui.tab=id; }
+  if(personEditId){ const ex=state.people.find(x=>x.id===personEditId); Object.assign(ex,obj); ex.u=Date.now(); }
+  else{ if(state.people.length>=MAX_PEOPLE){toast("최대 4명까지 가능합니다");return;} const id=uid(); state.people.push({id,...obj,records:[],del:{},u:Date.now()}); ui.tab=id; }
   save(); closePerson(); render(); toast("저장됨");
 };
 $("#btnDeletePerson").onclick=()=>{
   if(!personEditId)return; const p=state.people.find(x=>x.id===personEditId);
-  if(confirm('"'+p.name+'"을(를) 삭제할까요? 기록도 함께 사라집니다.')){ state.people=state.people.filter(x=>x.id!==personEditId); ui.tab="compare"; save(); closePerson(); render(); toast("삭제됨"); }
+  if(confirm('"'+p.name+'"을(를) 삭제할까요? 기록도 함께 사라집니다.')){
+    state.delPeople=state.delPeople||{}; state.delPeople[personEditId]=Date.now();   // 사람 삭제표식(부활 방지)
+    state.people=state.people.filter(x=>x.id!==personEditId); ui.tab="compare"; save(); closePerson(); render(); toast("삭제됨");
+  }
 };
 function val(s){const n=parseFloat(s);return isNaN(n)?null:n;}
 function yearVal(s){const n=parseInt(s,10);return (n>=1900&&n<=new Date().getFullYear())?n:null;}
@@ -1036,7 +1066,7 @@ $("#btnSaveRec").onclick=()=>{
   const w=parseFloat($("#rWeight").value);
   if(isNaN(w)){toast("체중을 입력하세요");return;}
   if(w<25||w>300){toast("체중은 25~300kg 범위로");return;}
-  if(date!==recEditOrigDate)p.records=p.records.filter(r=>r.date!==recEditOrigDate);
+  if(date!==recEditOrigDate) deleteRecord(p, recEditOrigDate);   // 날짜 변경 시 옛 날짜는 삭제표식 남김(중복 부활 방지)
   const rec={ date, weight:round1(w), memo:$("#rMemo").value.trim() };
   const f=val($("#rFat").value), mu=val($("#rMuscle").value), wa=val($("#rWaist").value);
   rec.bodyFat=f!=null?round1(f):null; rec.muscle=mu!=null?round1(mu):null; rec.waist=wa!=null?round1(wa):null;
@@ -1092,6 +1122,74 @@ $("#importFile").onchange=e=>{
   };
   reader.readAsText(file);
 };
+
+/* ============ 결과지 공유 (현재 화면 → 이미지 → 카톡/문자) ============ */
+const H2C_SRC="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+function loadScript(src){ return new Promise((res,rej)=>{ if(window.html2canvas) return res(); const s=document.createElement("script"); s.src=src; s.async=true; s.onload=()=>res(); s.onerror=()=>rej(new Error("스크립트 로드 실패")); document.head.appendChild(s); }); }
+
+$("#btnShare").onclick=()=>shareResult();
+async function shareResult(){
+  if(state.people.length===0){ toast("공유할 내용이 없습니다"); return; }
+  const viewEl=$("#view");
+  const title = ui.tab==="compare" ? "전체 비교" : (state.people.find(p=>p.id===ui.tab)||{}).name || "결과지";
+  // 캡처 전 라이브 차트 크기 기록 (html2canvas의 SVG 누락 방지)
+  const liveSvgs=[...viewEl.querySelectorAll("svg.chart")].map(s=>{ const r=s.getBoundingClientRect(); return {w:Math.round(r.width), h:Math.round(r.height)}; });
+
+  toast("결과지 생성 중...");
+  let html2canvas;
+  try{ await loadScript(H2C_SRC); html2canvas=window.html2canvas; if(!html2canvas) throw new Error("no lib"); }
+  catch(e){ toast("이미지 생성 도구를 불러오지 못했습니다(인터넷 연결 확인)"); return; }
+
+  try{
+    const canvas=await html2canvas(viewEl,{
+      backgroundColor: DARK ? "#0b1322" : "#eef1f6",
+      scale: Math.min(2, (window.devicePixelRatio||1)+0.5),
+      useCORS:true, logging:false, scrollX:0, scrollY:0,
+      windowWidth: document.documentElement.clientWidth,
+      onclone:(doc)=>{
+        const cv=doc.getElementById("view"); if(!cv) return;
+        // 1) 브랜드 배너 삽입
+        const banner=doc.createElement("div");
+        banner.style.cssText="background:linear-gradient(135deg,#0d9488,#0f766e);color:#fff;padding:16px 18px;border-radius:18px;margin:0 0 14px;font-family:inherit;box-shadow:0 6px 18px rgba(13,148,136,.28)";
+        banner.innerHTML='<div style="font-size:18px;font-weight:800;letter-spacing:-.3px">WF4 Healthcare · 결과지</div>'+
+          '<div style="font-size:13px;opacity:.92;margin-top:3px">'+escapeHtml(title)+' · '+todayStr()+'</div>';
+        cv.insertBefore(banner, cv.firstChild);
+        // 2) 입력/조작 요소 숨김 (정적 결과지로)
+        cv.querySelectorAll(".inrow,.rangebar,.acts,.link-toggle,.seg,#metricInputs").forEach(x=>{ x.style.display="none"; });
+        const tin=cv.querySelector("#inDate"); if(tin){ const c=tin.closest(".card"); if(c) c.style.display="none"; }
+        const eb=cv.querySelector("#btnEditPerson"); if(eb&&eb.parentElement) eb.parentElement.style.display="none";
+        // 3) 글래스 → 단색 (캡처 깨짐 방지)
+        cv.querySelectorAll(".card").forEach(c=>{ c.style.background=DARK?"#111a2e":"#ffffff"; c.style.backdropFilter="none"; c.style.webkitBackdropFilter="none"; c.style.boxShadow="0 1px 3px rgba(0,0,0,.07)"; c.style.border="1px solid "+(DARK?"#26334d":"#e6eaf1"); });
+        cv.querySelectorAll(".stat").forEach(s=>{ s.style.background=DARK?"rgba(255,255,255,.04)":"#f8fafc"; });
+        cv.querySelectorAll(".mini .m").forEach(s=>{ s.style.background=DARK?"rgba(255,255,255,.04)":"#f8fafc"; });
+        // 4) SVG 차트 명시적 크기 부여
+        [...cv.querySelectorAll("svg.chart")].forEach((s,i)=>{ if(liveSvgs[i]&&liveSvgs[i].w){ s.setAttribute("width",liveSvgs[i].w); s.setAttribute("height",liveSvgs[i].h); s.style.width=liveSvgs[i].w+"px"; s.style.height=liveSvgs[i].h+"px"; } });
+        // 5) 워터마크 푸터
+        const foot=doc.createElement("div");
+        foot.style.cssText="text-align:center;color:"+(DARK?"#7b8aa3":"#94a3b8")+";font-size:11px;font-weight:700;margin-top:14px;font-family:inherit";
+        foot.textContent="WF4 Healthcare";
+        cv.appendChild(foot);
+      }
+    });
+
+    const blob=await new Promise(res=>canvas.toBlob(res,"image/png",0.95));
+    if(!blob){ toast("이미지 생성 실패"); return; }
+    const fname="WF4_결과지_"+escapeFile(title)+"_"+todayStr()+".png";
+    const file=new File([blob],fname,{type:"image/png"});
+
+    // Web Share API: 모바일에서 카카오톡/메시지(문자) 등 공유 시트 표시
+    if(navigator.canShare && navigator.canShare({files:[file]})){
+      try{ await navigator.share({ files:[file], title:"WF4 건강 결과지", text:title+" 건강 결과지 ("+todayStr()+")" }); }
+      catch(e){ /* 사용자 취소 — 무시 */ }
+    }else{
+      // 미지원(주로 데스크톱): 파일 저장 후 안내
+      const url=URL.createObjectURL(blob); const a=document.createElement("a"); a.href=url; a.download=fname;
+      document.body.appendChild(a); a.click(); a.remove(); setTimeout(()=>URL.revokeObjectURL(url),1000);
+      toast("이미지를 저장했어요 — 카톡/문자에 첨부해 보내세요");
+    }
+  }catch(e){ toast("결과지 생성 실패: "+(e&&e.message?e.message:"오류")); }
+}
+function escapeFile(s){ return String(s).replace(/[\\/:*?"<>|\s]+/g,"_").slice(0,24); }
 
 /* 배경 클릭으로 닫기 (입력칸에서 시작한 드래그는 무시) */
 document.querySelectorAll(".overlay").forEach(o=>{
