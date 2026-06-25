@@ -351,7 +351,7 @@ const COLOR_HEX=["#0d9488","#3b82f6","#f59e0b","#a855f7"];
 
 let state={ people:[], delPeople:{}, updatedAt:null };
 let cfg={ bin:"", key:"" };
-let ui={ tab:"compare", range:30, cmpMode:"delta", metric:"weight", showMetricInput:false };
+let ui={ tab:"compare", range:30, cmpMode:"goal", cmpGran:"day", metric:"weight", showMetricInput:false };
 
 /* 추적 지표 정의 (체중 + 체성분) */
 const METRICS=[
@@ -404,7 +404,7 @@ function bmiCat(b){
 }
 function ageOf(p){ if(!p||p.birthYear==null) return null; const a=new Date().getFullYear()-p.birthYear; return (a>=0&&a<=120)?a:null; }
 function isYouth(p){ const a=ageOf(p); return a!=null && a<19; }
-function weightZone(height){ if(!height) return null; const m=height/100; return {lo:22.9*m*m, hi:24.9*m*m}; } // 표준(정상) 상한 ~ 과체중 상한
+function weightZone(height){ if(!height) return null; const m=height/100; return {lo:18.5*m*m, hi:22.9*m*m}; } // 정상(이상적) 체중 범위 BMI 18.5~22.9
 
 /* 선형회귀 (지표 key 기준) */
 function regressionKey(p,key){
@@ -928,8 +928,13 @@ function drawMetricChart(wrap,p,key){
 function renderCompare(v){
   let html='<div class="card"><h2>비교 분석</h2>';
   if(state.people.length===0){ html+='<div class="empty">사람을 추가하면 비교가 표시됩니다.</div></div>'; v.innerHTML=html; return; }
-  html+='<div class="seg" style="margin-bottom:10px"><button data-mode="delta" class="'+(ui.cmpMode==="delta"?"active":"")+'">시작 대비 변화량</button><button data-mode="abs" class="'+(ui.cmpMode==="abs"?"active":"")+'">실제 체중</button></div>';
-  html+='<div class="chart-wrap" id="cmpWrap"></div><div class="rangebar">'+rangeBtns()+'</div>';
+  // 모드 선택 (목표 달성률 / 시작 대비 변화량 / 실제 체중)
+  const modes=[["goal","목표 달성률"],["delta","시작 대비 변화량"],["abs","실제 체중"]];
+  html+='<div class="seg" style="margin-bottom:10px">'+modes.map(m=>'<button data-mode="'+m[0]+'" class="'+(ui.cmpMode===m[0]?"active":"")+'">'+m[1]+'</button>').join("")+'</div>';
+  html+='<div class="chart-wrap" id="cmpWrap"></div>';
+  // 집계 단위 (일자별 / 주차별 / 전체)
+  const grans=[["day","일자별"],["week","주차별"],["month","전체"]];
+  html+='<div class="rangebar">'+grans.map(g=>'<button data-gran="'+g[0]+'" class="'+(ui.cmpGran===g[0]?"active":"")+'">'+g[1]+'</button>').join("")+'</div>';
   html+='<div class="legend">';
   state.people.forEach((p,i)=>{ html+='<span><span class="dot" style="background:'+COLOR_HEX[i]+'"></span>'+escapeHtml(p.name)+'</span>'; });
   html+='</div></div>';
@@ -949,37 +954,67 @@ function renderCompare(v){
   v.innerHTML=html;
   drawCompareChart($("#cmpWrap"));
   v.querySelectorAll(".seg button[data-mode]").forEach(b=>b.onclick=()=>{ui.cmpMode=b.dataset.mode;renderView();});
-  v.querySelectorAll(".rangebar button").forEach(b=>b.onclick=()=>{ui.range=parseInt(b.dataset.range);renderView();});
+  v.querySelectorAll(".rangebar button[data-gran]").forEach(b=>b.onclick=()=>{ui.cmpGran=b.dataset.gran;renderView();});
 }
+
+/* 기록을 집계 단위로 묶기 (일/주/월 평균) */
+function aggregateRecords(recs, gran){
+  if(gran==="day") return recs.map(r=>({t:parseDate(r.date).getTime(), w:r.weight}));
+  const buckets={};
+  recs.forEach(r=>{
+    const d=parseDate(r.date); let key, ts;
+    if(gran==="week"){ const dow=(d.getDay()+6)%7; const mon=new Date(d.getTime()-dow*86400000); mon.setHours(0,0,0,0); key=dateStr(mon); ts=mon.getTime(); }
+    else { key=d.getFullYear()+"-"+z2(d.getMonth()+1); ts=new Date(d.getFullYear(),d.getMonth(),15).getTime(); }
+    if(!buckets[key]) buckets[key]={sum:0,cnt:0,ts}; buckets[key].sum+=r.weight; buckets[key].cnt++;
+  });
+  return Object.keys(buckets).sort().map(k=>({t:buckets[k].ts, w:buckets[k].sum/buckets[k].cnt}));
+}
+function fmtAxis(ts,gran){ const d=new Date(ts); return gran==="month" ? (d.getMonth()+1)+"월" : (d.getMonth()+1)+"월 "+d.getDate()+"일"; }
+
 function drawCompareChart(wrap){
+  const mode=ui.cmpMode, gran=ui.cmpGran;
+  const isPct=mode==="goal";
   const series=[];
   state.people.forEach((p,i)=>{
-    let recs=filterByRange(recsWith(p,"weight")); if(recs.length===0)return;
-    const start=p.startWeight!=null?p.startWeight:recsWith(p,"weight")[0].weight;
-    const pts=recs.map(r=>({t:parseDate(r.date).getTime(), v: ui.cmpMode==="delta"? (r.weight-start) : r.weight, raw:r.weight, date:r.date}));
+    const wRecs=recsWith(p,"weight"); if(wRecs.length===0)return;
+    const start=p.startWeight!=null?p.startWeight:wRecs[0].weight;
+    if(mode==="goal" && (start==null||p.goalWeight==null||start===p.goalWeight)) return;  // 목표 없으면 달성률 생략
+    const agg=aggregateRecords(wRecs, gran);
+    const pts=agg.map(a=>{
+      let v;
+      if(mode==="abs") v=a.w;
+      else if(mode==="delta") v=a.w-start;
+      else v=(start-a.w)/(start-p.goalWeight)*100;   // 목표 달성률 %
+      return {t:a.t, v, raw:a.w};
+    });
     series.push({color:COLOR_HEX[i], name:p.name, pts});
   });
-  if(series.length===0){ wrap.innerHTML='<div class="empty">표시할 데이터가 없습니다.</div>'; return; }
-  const W=680,H=300,padL=44,padR=16,padT=16,padB=34;
+  if(series.length===0){ wrap.innerHTML='<div class="empty">'+(isPct?"목표를 설정하면 달성률이 표시됩니다.":"표시할 데이터가 없습니다.")+'</div>'; return; }
+  const W=680,H=300,padL=46,padR=16,padT=16,padB=34;
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
   series.forEach(s=>s.pts.forEach(pt=>{ minX=Math.min(minX,pt.t);maxX=Math.max(maxX,pt.t);minY=Math.min(minY,pt.v);maxY=Math.max(maxY,pt.v); }));
-  if(ui.cmpMode==="delta"){ minY=Math.min(minY,0); maxY=Math.max(maxY,0); }
-  const padY=Math.max(0.5,(maxY-minY)*0.12); minY-=padY; maxY+=padY;
+  if(mode==="delta"){ minY=Math.min(minY,0); maxY=Math.max(maxY,0); }
+  if(mode==="goal"){ minY=Math.min(minY,0); maxY=Math.max(maxY,100); }   // 0%·100% 기준 포함
+  const padY=Math.max(isPct?2:0.5,(maxY-minY)*0.12); minY-=padY; maxY+=padY;
   const spanX=maxX-minX||1, spanY=maxY-minY||1;
   const px=t=>padL+((t-minX)/spanX)*(W-padL-padR); const py=val=>padT+(1-(val-minY)/spanY)*(H-padT-padB);
   let svg='<svg class="chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">';
   for(let i=0;i<=4;i++){ const val=minY+(spanY*i/4); const y=py(val);
     svg+='<line x1="'+padL+'" y1="'+y+'" x2="'+(W-padR)+'" y2="'+y+'" stroke="'+C_GRID+'" stroke-width="1"/>';
-    const lbl=ui.cmpMode==="delta"?((val>0?"+":"")+val.toFixed(1)):val.toFixed(1);
+    let lbl; if(isPct) lbl=Math.round(val)+"%"; else lbl=(mode==="delta"&&val>0?"+":"")+val.toFixed(1);
     svg+='<text x="'+(padL-6)+'" y="'+(y+4)+'" font-size="11" fill="'+C_AXIS+'" text-anchor="end">'+lbl+'</text>'; }
-  if(ui.cmpMode==="delta"){ const zy=py(0); svg+='<line x1="'+padL+'" y1="'+zy+'" x2="'+(W-padR)+'" y2="'+zy+'" stroke="'+C_ZERO+'" stroke-width="1.5"/>'; }
-  const allDates=[...new Set(series.flatMap(s=>s.pts.map(p=>p.date)))].sort();
-  [allDates[0],allDates[Math.floor(allDates.length/2)],allDates[allDates.length-1]].filter((v,i,a)=>v&&a.indexOf(v)===i).forEach(dt=>{
-    const x=px(parseDate(dt).getTime()); svg+='<text x="'+x+'" y="'+(H-12)+'" font-size="10" fill="'+C_AXIS+'" text-anchor="middle">'+fmtMD(dt)+'</text>'; });
+  // 기준선: 변화량=0, 달성률=100%
+  if(mode==="delta"){ const zy=py(0); svg+='<line x1="'+padL+'" y1="'+zy+'" x2="'+(W-padR)+'" y2="'+zy+'" stroke="'+C_ZERO+'" stroke-width="1.5"/>'; }
+  if(mode==="goal" && 100>=minY && 100<=maxY){ const gy=py(100); svg+='<line x1="'+padL+'" y1="'+gy+'" x2="'+(W-padR)+'" y2="'+gy+'" stroke="'+C_GOAL+'" stroke-width="1.5" stroke-dasharray="6 4"/><text x="'+(W-padR)+'" y="'+(gy-5)+'" font-size="10" fill="'+C_GOAL+'" text-anchor="end" font-weight="700">목표 100%</text>'; }
+  // x축 라벨
+  const allTs=[...new Set(series.flatMap(s=>s.pts.map(p=>p.t)))].sort((a,b)=>a-b);
+  [allTs[0],allTs[Math.floor(allTs.length/2)],allTs[allTs.length-1]].filter((v,i,a)=>v!=null&&a.indexOf(v)===i).forEach(ts=>{
+    svg+='<text x="'+px(ts)+'" y="'+(H-12)+'" font-size="10" fill="'+C_AXIS+'" text-anchor="middle">'+fmtAxis(ts,gran)+'</text>'; });
   series.forEach(s=>{ let d='';
     s.pts.forEach((pt,i)=>{ d+=(i===0?"M":"L")+px(pt.t).toFixed(1)+" "+py(pt.v).toFixed(1)+" "; });
     svg+='<path d="'+d+'" fill="none" stroke="'+s.color+'" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>';
-    s.pts.forEach(pt=>{ svg+='<circle cx="'+px(pt.t)+'" cy="'+py(pt.v)+'" r="2.6" fill="var(--card-solid)" stroke="'+s.color+'" stroke-width="2"><title>'+escapeHtml(s.name)+" · "+pt.date+" · "+fmtKg(pt.raw)+'kg</title></circle>'; });
+    s.pts.forEach(pt=>{ const tip=escapeHtml(s.name)+" · "+fmtAxis(pt.t,gran)+" · "+(isPct? Math.round(pt.v)+"% ("+fmtKg(pt.raw)+"kg)" : fmtKg(pt.raw)+"kg");
+      svg+='<circle cx="'+px(pt.t)+'" cy="'+py(pt.v)+'" r="2.6" fill="var(--card-solid)" stroke="'+s.color+'" stroke-width="2"><title>'+tip+'</title></circle>'; });
   });
   svg+='</svg>'; wrap.innerHTML=svg;
 }
