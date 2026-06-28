@@ -119,6 +119,18 @@
     padding:4px 10px; border-radius:999px; border:1px solid rgba(13,148,136,.2)}
   @media (prefers-color-scheme: dark){ .range-pill{background:rgba(45,212,191,.1)} }
 
+  /* BMI 단계표 */
+  .ladder{display:flex; flex-direction:column; gap:2px}
+  .lad{display:flex; align-items:center; gap:10px; padding:8px 10px; border-radius:10px; border:1px solid transparent}
+  .lad .nm{display:flex; flex-direction:column; gap:1px; min-width:0}
+  .lad .nm .t{font-size:12.5px; font-weight:800; display:flex; align-items:center; gap:7px}
+  .lad .nm .t .d{width:8px; height:8px; border-radius:50%; flex:0 0 auto}
+  .lad .nm .b{font-size:10.5px; color:var(--muted); font-weight:700; padding-left:15px}
+  .lad .wt{margin-left:auto; font-size:13px; font-weight:800; text-align:right; white-space:nowrap; padding-left:8px}
+  .lad.cur{background:rgba(13,148,136,.1); border-color:rgba(13,148,136,.28)}
+  @media (prefers-color-scheme: dark){ .lad.cur{background:rgba(45,212,191,.12)} }
+  .now{font-size:9.5px; font-weight:900; color:#fff; background:var(--accent); padding:1px 6px; border-radius:99px}
+
   /* mini stats grid */
   .mini{display:grid; grid-template-columns:repeat(3,1fr); gap:9px}
   .mini .m{border:1px solid var(--card-brd); border-radius:13px; padding:11px 10px; text-align:center;
@@ -406,6 +418,29 @@ function ageOf(p){ if(!p||p.birthYear==null) return null; const a=new Date().get
 function isYouth(p){ const a=ageOf(p); return a!=null && a<19; }
 function weightZone(height){ if(!height) return null; const m=height/100; return {lo:18.5*m*m, hi:22.9*m*m}; } // 정상(이상적) 체중 범위 BMI 18.5~22.9
 
+/* BMI 단계별 기준 체중 (키 기준, 대한비만학회 분류) */
+const BMI_BANDS=[
+  {t:"저체중",          c:"#3b82f6", lo:0,    hi:18.5},
+  {t:"정상",            c:"#10b981", lo:18.5, hi:23},
+  {t:"과체중",          c:"#f59e0b", lo:23,   hi:25},
+  {t:"경도비만 (1단계)", c:"#f97316", lo:25,   hi:30},
+  {t:"중등도비만 (2단계)",c:"#ef4444", lo:30,   hi:35},
+  {t:"고도비만 (3단계)", c:"#dc2626", lo:35,   hi:40},
+  {t:"초고도비만",       c:"#991b1b", lo:40,   hi:Infinity},
+];
+function bmiLadder(height, curWeight){
+  if(!height) return null;
+  const m2=(height/100)*(height/100);
+  const curBmi = curWeight!=null ? curWeight/m2 : null;
+  return BMI_BANDS.map(b=>{
+    const loW = b.lo>0 ? b.lo*m2 : null;
+    const hiW = isFinite(b.hi) ? b.hi*m2 : null;
+    const bmiLabel = b.lo<=0 ? "18.5 미만" : (!isFinite(b.hi) ? "40 이상" : b.lo+"~"+(b.hi-0.1).toFixed(1));
+    const isCur = curBmi!=null && curBmi>=b.lo && (isFinite(b.hi)? curBmi<b.hi : true);
+    return { t:b.t, c:b.c, loW, hiW, bmiLabel, isCur };
+  });
+}
+
 /* 선형회귀 (지표 key 기준) */
 function regressionKey(p,key){
   const r=recsWith(p,key); if(r.length<2)return null;
@@ -480,15 +515,13 @@ function buildMilestones(p){
   const last=latest(p); if(!last||p.startWeight==null||p.goalWeight==null) return null;
   const start=p.startWeight, goal=p.goalWeight, cur=last.weight;
   const total=Math.abs(start-goal); if(total<0.5) return null;
-  const losing=goal<start;
-  let step=total/5;
-  const nice=[0.5,1,1.5,2,2.5,3,5,10];
-  step=nice.reduce((a,b)=>Math.abs(b-step)<Math.abs(a-step)?b:a, nice[0]);
-  const list=[]; const sign=losing?-1:1;
-  for(let w=start+sign*step; losing? w>goal+1e-6 : w<goal-1e-6; w+=sign*step) list.push(round1(w));
-  list.push(round1(goal));
+  const losing=goal<start; const sign=losing?-1:1;
+  const STAGES=4;                                   // 최대 4단계 (25/50/75/100%)
+  const pts=[];
+  for(let i=1;i<=STAGES;i++) pts.push(round1(start + sign*total*i/STAGES));
+  pts[pts.length-1]=round1(goal);                   // 마지막은 정확히 목표
   const seen=new Set(); const ms=[];
-  list.forEach(w=>{ if(!seen.has(w)){ seen.add(w); ms.push({weight:w, reached: losing? cur<=w+1e-9 : cur>=w-1e-9}); } });
+  pts.forEach(w=>{ if(!seen.has(w)){ seen.add(w); ms.push({weight:w, reached: losing? cur<=w+1e-9 : cur>=w-1e-9}); } });
   return {losing, items:ms, reachedCount:ms.filter(m=>m.reached).length, total:ms.length};
 }
 function milestonesReachedCount(p){ const m=buildMilestones(p); return m?m.reachedCount:0; }
@@ -637,7 +670,7 @@ function renderView(){
 }
 
 function statCard(label,val,cls){ return '<div class="stat"><div class="label">'+label+'</div><div class="val tnum '+(cls||"")+'">'+val+'</div></div>'; }
-function rangeBtns(){ const opts=[[7,"7일"],[30,"30일"],[90,"90일"],[99999,"전체"]];
+function rangeBtns(){ const opts=[[7,"7일"],[15,"15일"],[30,"30일"],[99999,"전체"]];
   return opts.map(o=>'<button data-range="'+o[0]+'" class="'+(ui.range===o[0]?"active":"")+'">'+o[1]+'</button>').join(""); }
 
 /* ---------- 개인 화면 ---------- */
@@ -686,6 +719,25 @@ function renderPerson(v,p){
     html+='</div>';
   }
   html+='</div>';
+
+  /* BMI 단계별 기준 체중 */
+  if(bmi!=null && p.height && !isYouth(p)){
+    const lad=bmiLadder(p.height, cur);
+    html+='<div class="card"><h2>BMI 단계별 기준 체중 <span class="tag">키 '+p.height+'cm</span></h2>';
+    html+='<p class="small muted" style="margin:-8px 0 10px">현재 '+fmtKg(cur)+'kg · BMI '+bmi.toFixed(1)+' ('+cat.t+'). 각 단계에 해당하는 체중 구간이에요.</p>';
+    html+='<div class="ladder">';
+    lad.forEach(b=>{
+      let wt;
+      if(b.loW==null) wt=fmtKg(b.hiW)+'kg 미만';
+      else if(b.hiW==null) wt=fmtKg(b.loW)+'kg 이상';
+      else wt=fmtKg(b.loW)+'~'+fmtKg(b.hiW)+'kg';
+      html+='<div class="lad'+(b.isCur?' cur':'')+'">'+
+        '<span class="nm"><span class="t"><span class="d" style="background:'+b.c+'"></span>'+b.t+(b.isCur?' <span class="now">현재</span>':'')+'</span>'+
+        '<span class="b tnum">BMI '+b.bmiLabel+'</span></span>'+
+        '<span class="wt tnum">'+wt+'</span></div>';
+    });
+    html+='</div></div>';
+  }
 
   /* 통계 */
   const st=statsFor(p,"weight");
