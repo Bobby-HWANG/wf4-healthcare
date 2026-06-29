@@ -420,13 +420,10 @@ function weightZone(height){ if(!height) return null; const m=height/100; return
 
 /* BMI 단계별 기준 체중 (키 기준, 대한비만학회 분류) */
 const BMI_BANDS=[
-  {t:"저체중",          c:"#3b82f6", lo:0,    hi:18.5},
   {t:"정상",            c:"#10b981", lo:18.5, hi:23},
   {t:"과체중",          c:"#f59e0b", lo:23,   hi:25},
   {t:"경도비만 (1단계)", c:"#f97316", lo:25,   hi:30},
   {t:"중등도비만 (2단계)",c:"#ef4444", lo:30,   hi:35},
-  {t:"고도비만 (3단계)", c:"#dc2626", lo:35,   hi:40},
-  {t:"초고도비만",       c:"#991b1b", lo:40,   hi:Infinity},
 ];
 function bmiLadder(height, curWeight){
   if(!height) return null;
@@ -476,17 +473,26 @@ function statsFor(p,key){
   const vals=recs.map(r=>r[key]);
   const first=recs[0][key], cur=recs[recs.length-1][key];
   const anchor=recs[recs.length-1].date;
+  // 이번 주 vs 지난주: 지난주 데이터가 없으면 7일 이전 가장 가까운 기록(없으면 첫 기록)과 비교
   const wkA=avgInWindow(recs,key,anchor,7);
   const prevAnchor=dateStr(new Date(parseDate(anchor).getTime()-7*86400000));
   const wkB=avgInWindow(recs,key,prevAnchor,7);
+  let weekVsPrev=null;
+  if(wkA!=null && wkB!=null) weekVsPrev=wkA-wkB;
+  else if(recs.length>=2){
+    const cut=parseDate(anchor).getTime()-7*86400000; let ref=null;
+    for(let i=recs.length-1;i>=0;i--){ if(parseDate(recs[i].date).getTime()<=cut){ ref=recs[i][key]; break; } }
+    if(ref==null) ref=first;
+    weekVsPrev=cur-ref;
+  }
+  // 최근 30일: 30일 전 근처 기록(없으면 첫 기록) 기준
   const monAgo=dateStr(new Date(parseDate(anchor).getTime()-30*86400000));
-  // 30일 전 근처 값(가장 가까운 과거 기록)
   let monthAgoVal=null; for(let i=recs.length-1;i>=0;i--){ if(recs[i].date<=monAgo){ monthAgoVal=recs[i][key]; break; } }
+  if(monthAgoVal==null && recs.length>=2) monthAgoVal=first;
+  const monthChange = (monthAgoVal!=null && recs.length>=2) ? cur-monthAgoVal : null;
   return {
     cur, first, min:Math.min(...vals), max:Math.max(...vals),
-    allChange: cur-first,
-    weekVsPrev: (wkA!=null&&wkB!=null)? wkA-wkB : null,
-    monthChange: monthAgoVal!=null? cur-monthAgoVal : null,
+    allChange: cur-first, weekVsPrev, monthChange,
   };
 }
 
@@ -811,6 +817,7 @@ function renderPerson(v,p){
     html+='<div id="recList">';
     [...recs].reverse().forEach(r=>{
       let chips='';
+      if(r.auto) chips+='<span class="chip" style="background:rgba(176,134,66,.16);color:var(--gold)">자동</span>';
       if(r.bodyFat!=null) chips+='<span class="chip">체지방 '+fmtKg(r.bodyFat)+'%</span>';
       if(r.muscle!=null) chips+='<span class="chip">근육 '+fmtKg(r.muscle)+'kg</span>';
       if(r.waist!=null) chips+='<span class="chip">허리 '+fmtKg(r.waist)+'cm</span>';
@@ -863,18 +870,13 @@ function paceFeedback(p){
   const weekly=reg.slope*7; const wkAbs=round1(Math.abs(weekly)).toFixed(1);
   const dir = weekly<-0.01 ? "감량" : weekly>0.01 ? "증량" : "유지";
   const trendLine = dir==="유지" ? '최근 추세: <b>거의 변화 없음</b>' : '최근 추세: <b>주당 '+(weekly>0?"+":"-")+wkAbs+'kg</b> ('+dir+')';
-  let safety='';
-  if(weekly<0 && last.weight>0){
-    const pctWk=Math.abs(weekly)/last.weight*100;
-    if(pctWk>1.0) safety='<div class="pace neutral" style="margin-top:8px">주당 체중의 1%(약 '+round1(last.weight*0.01).toFixed(1)+'kg) 이내의 감량이 더 안정적으로 유지되는 편이에요.</div>';
-  }
-  if(p.goalWeight==null) return '<div class="pace neutral">'+trendLine+'</div>'+safety;
+  if(p.goalWeight==null) return '<div class="pace neutral">'+trendLine+'</div>';
   const losing = p.goalWeight < last.weight - 0.05, gaining = p.goalWeight > last.weight + 0.05;
-  if(!losing && !gaining) return '<div class="pace">목표 체중을 달성했습니다! 잘하셨어요.</div>'+safety;
+  if(!losing && !gaining) return '<div class="pace">목표 체중을 달성했습니다! 잘하셨어요.</div>';
   const toward = (losing && weekly<0) || (gaining && weekly>0);
   if(!toward){
     const msg = losing ? '현재 추세로는 감량이 정체/역행 중이라 목표 도달이 어려워요.' : '현재 추세로는 증량이 정체/역행 중이라 목표 도달이 어려워요.';
-    return '<div class="pace neutral">'+trendLine+'</div><div class="pace bad" style="margin-top:8px">'+msg+'</div>'+safety;
+    return '<div class="pace neutral">'+trendLine+'</div><div class="pace bad" style="margin-top:8px">'+msg+'</div>';
   }
   const xGoal=(p.goalWeight-reg.intercept)/reg.slope;
   const reach=new Date(reg.x0 + xGoal*86400000); const reachDateStr=dateStr(reach);
@@ -885,7 +887,7 @@ function paceFeedback(p){
   else{ const diff=daysBetween(reachDateStr, p.goalDate);
     if(diff>=0){ goalLine='이 속도면 <b>'+fmtMD(reachDateStr)+'</b> 도달 — 목표보다 <b>'+diff+'일 빠름</b>.'; cls='pace'; }
     else{ goalLine='이 속도면 <b>'+fmtMD(reachDateStr)+'</b> 도달 — 목표보다 <b>'+(-diff)+'일 늦음</b>.'; cls='pace bad'; } }
-  return '<div class="pace neutral">'+trendLine+'</div><div class="'+cls+'" style="margin-top:8px">'+goalLine+'</div>'+safety;
+  return '<div class="pace neutral">'+trendLine+'</div><div class="'+cls+'" style="margin-top:8px">'+goalLine+'</div>';
 }
 
 function upsertRecord(p, rec){
@@ -1285,11 +1287,56 @@ document.querySelectorAll(".overlay").forEach(o=>{
   o.addEventListener("click",e=>{ if(startedOnBackdrop && e.target===o) o.classList.remove("show"); startedOnBackdrop=false; });
 });
 
+/* ============ 전일 미입력 자동 보정 (전일 데이터 이어받기) ============ */
+/* 00시 기준으로 날짜가 넘어간 뒤, 마지막 기록일 다음날부터 '어제'까지 비어 있으면
+   가장 최근 체중을 그대로 이어서 자동 입력(carry-forward). 직접 삭제한 날(삭제표식)은 건드리지 않음. */
+function autoFillMissing(){
+  const MAX_FILL=60;                       // 안전장치: 한 번에 최대 60일까지만 채움
+  const yest=new Date(); yest.setHours(0,0,0,0); yest.setDate(yest.getDate()-1);
+  let filled=0;
+  (state.people||[]).forEach(p=>{
+    const recs=sortedRecords(p); if(recs.length===0) return;
+    const last=recs[recs.length-1];
+    let lastW=last.weight;
+    let cursor=parseDate(last.date); cursor.setDate(cursor.getDate()+1);
+    const have=new Set((p.records||[]).map(r=>r.date));
+    let count=0;
+    while(cursor.getTime()<=yest.getTime() && count<MAX_FILL){
+      const ds=dateStr(cursor);
+      const tomb = p.del && p.del[ds];     // 직접 삭제한 날이면 건너뜀
+      if(!have.has(ds) && !tomb){
+        p.records.push({ date:ds, weight:round1(lastW), auto:true, u:Date.now() });
+        have.add(ds); filled++;
+      } else if(have.has(ds)){
+        const r=p.records.find(x=>x.date===ds); if(r&&r.weight!=null) lastW=r.weight;   // 중간에 실제 기록이 있으면 그 값으로 이어감
+      }
+      cursor.setDate(cursor.getDate()+1); count++;
+    }
+    if(p.records) p.records.sort((a,b)=>a.date<b.date?-1:1);
+  });
+  return filled;
+}
+
 /* ============ 초기화 ============ */
-function init(){
-  loadLocal(); render();
-  if(cfg.bin&&cfg.key){ setSyncLabel("동기화 중..."); autoSyncTick(); startAutoSync(); }
-  else setSyncLabel("로컬 모드");
+async function init(){
+  loadLocal();
+  render();
+  if(cfg.bin&&cfg.key){
+    setSyncLabel("동기화 중...");
+    isSyncing=true;
+    try{ await pullMerge(); }catch(e){}     // 먼저 최신을 받아 다른 기기의 실제 기록을 덮어쓰지 않게
+    const filled=autoFillMissing();
+    isSyncing=false;
+    render();
+    if(filled>0) toast("전일 미입력 "+filled+"일을 직전 체중으로 자동 입력했어요");
+    try{ await save(); }catch(e){}
+    startAutoSync();
+  }else{
+    const filled=autoFillMissing();
+    render();
+    if(filled>0){ toast("전일 미입력 "+filled+"일을 직전 체중으로 자동 입력했어요"); save(); }
+    setSyncLabel("로컬 모드");
+  }
 }
 init();
 </script>
