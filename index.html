@@ -396,6 +396,27 @@ const C_AXIS = DARK ? "#7b8aa3" : "#94a3b8";
 const C_ZERO = DARK ? "#334155" : "#cbd5e1";
 const C_TREND= DARK ? "#64748b" : "#94a3b8";
 const C_GOAL = DARK ? "#d8b878" : "#b08642";
+const C_HALO = DARK ? "#111a2e" : "#ffffff";   // 데이터 레이블 외곽선(가독성)
+
+/* 선마다 최대·최소·최종값 데이터 레이블을 점 위쪽에 표시 (끝부분 잘림 방지용 anchor 보정) */
+function dataLabels(pts, getX, getY, getV, fmt, color, dim){
+  if(!pts || pts.length===0) return '';
+  let maxI=0, minI=0;
+  pts.forEach((p,i)=>{ if(getV(p)>getV(pts[maxI])) maxI=i; if(getV(p)<getV(pts[minI])) minI=i; });
+  const lastI=pts.length-1;
+  const idxs=[...new Set([maxI,minI,lastI])];
+  let out='';
+  idxs.forEach(i=>{
+    const p=pts[i]; const x=getX(p); let y=getY(p)-9;
+    if(y < dim.padT+10) y=getY(p)+15;                 // 위 공간 부족하면 아래로
+    let anchor="middle", tx=x;
+    if(x < dim.padL+18){ anchor="start"; tx=x-3; }
+    else if(x > dim.W-dim.padR-18){ anchor="end"; tx=x+3; }
+    out+='<text x="'+tx+'" y="'+y+'" font-size="10.5" font-weight="800" text-anchor="'+anchor+'" '+
+         'paint-order="stroke" stroke="'+C_HALO+'" stroke-width="3.2" stroke-linejoin="round" fill="'+color+'">'+fmt(getV(p))+'</text>';
+  });
+  return out;
+}
 
 function sortedRecords(p){return [...(p.records||[])].sort((a,b)=>a.date<b.date?-1:1);}
 function latest(p){const r=sortedRecords(p);return r.length?r[r.length-1]:null;}
@@ -932,12 +953,13 @@ function drawMetricChart(wrap,p,key){
   if(recs.length===0){ wrap.innerHTML='<div class="empty">표시할 '+def.label+' 데이터가 없습니다.</div>'; return; }
   const showGoal = (key==="weight" && p.goalWeight!=null);
 
-  const W=680,H=300,padL=42,padR=16,padT=16,padB=34;
+  const W=680,H=320,padL=48,padR=30,padT=34,padB=38;       // 여백 확대(레이블 잘림 방지)
+  const dim={W,padL,padR,padT};
   const xs=recs.map(r=>parseDate(r.date).getTime());
   const ys=recs.map(r=>r[key]);
   let minY=Math.min(...ys), maxY=Math.max(...ys);
   if(showGoal){ minY=Math.min(minY,p.goalWeight); maxY=Math.max(maxY,p.goalWeight); }
-  const padY=Math.max(0.5,(maxY-minY)*0.12); minY-=padY; maxY+=padY;
+  const padY=Math.max(0.6,(maxY-minY)*0.18); minY-=padY; maxY+=padY;   // 상하 여유 확대
   const minX=Math.min(...xs), maxX=Math.max(...xs);
   const spanX=maxX-minX||1, spanY=maxY-minY||1;
   const px=t=>padL+((t-minX)/spanX)*(W-padL-padR);
@@ -947,12 +969,13 @@ function drawMetricChart(wrap,p,key){
   for(let i=0;i<=4;i++){ const val=minY+(spanY*i/4); const y=py(val);
     svg+='<line x1="'+padL+'" y1="'+y+'" x2="'+(W-padR)+'" y2="'+y+'" stroke="'+C_GRID+'" stroke-width="1"/>';
     svg+='<text x="'+(padL-6)+'" y="'+(y+4)+'" font-size="11" fill="'+C_AXIS+'" text-anchor="end">'+val.toFixed(1)+'</text>'; }
-  [0,Math.floor(recs.length/2),recs.length-1].filter((v,i,a)=>a.indexOf(v)===i).forEach(idx=>{
+  [0,Math.floor(recs.length/2),recs.length-1].filter((v,i,a)=>a.indexOf(v)===i).forEach((idx,n,arr)=>{
     const r=recs[idx]; const x=px(parseDate(r.date).getTime());
-    svg+='<text x="'+x+'" y="'+(H-12)+'" font-size="10" fill="'+C_AXIS+'" text-anchor="middle">'+fmtMD(r.date)+'</text>'; });
+    const anchor = idx===0?"start":(idx===recs.length-1?"end":"middle");
+    svg+='<text x="'+x+'" y="'+(H-12)+'" font-size="10" fill="'+C_AXIS+'" text-anchor="'+anchor+'">'+fmtMD(r.date)+'</text>'; });
   if(showGoal){ const gy=py(p.goalWeight);
     svg+='<line x1="'+padL+'" y1="'+gy+'" x2="'+(W-padR)+'" y2="'+gy+'" stroke="'+C_GOAL+'" stroke-width="1.5" stroke-dasharray="6 4"/>';
-    svg+='<text x="'+(W-padR)+'" y="'+(gy-5)+'" font-size="10" fill="'+C_GOAL+'" text-anchor="end" font-weight="700">목표 '+fmtKg(p.goalWeight)+'</text>'; }
+    svg+='<text x="'+(padL+2)+'" y="'+(gy-5)+'" font-size="10" fill="'+C_GOAL+'" text-anchor="start" font-weight="700">목표 '+fmtKg(p.goalWeight)+'</text>'; }
   const reg=regressionKey(p,key);
   if(reg && recs.length>=2){ const t0=minX,t1=maxX;
     const v0=reg.slope*((t0-reg.x0)/86400000)+reg.intercept, v1=reg.slope*((t1-reg.x0)/86400000)+reg.intercept;
@@ -969,6 +992,8 @@ function drawMetricChart(wrap,p,key){
     svg+='<path d="'+dm+'" fill="none" stroke="'+def.color+'" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>'; }
   recs.forEach(r=>{ const x=px(parseDate(r.date).getTime()), y=py(r[key]);
     svg+='<circle cx="'+x+'" cy="'+y+'" r="2.6" fill="var(--card-solid)" stroke="'+def.color+'" stroke-width="2"><title>'+r.date+" · "+fmtN(r[key])+def.unit+'</title></circle>'; });
+  // 데이터 레이블 (최대·최소·최종, 점 위쪽)
+  svg+=dataLabels(recs, r=>px(parseDate(r.date).getTime()), r=>py(r[key]), r=>r[key], v=>fmtN(v), def.color, dim);
   svg+='</svg>';
   let leg='<div class="legend"><span><span class="dot" style="background:'+def.color+'"></span>'+def.label+'(일별)</span>'+
           '<span><span class="dot" style="background:'+def.color+'"></span>7일 평균</span>'+
@@ -1044,12 +1069,13 @@ function drawCompareChart(wrap){
     series.push({color:COLOR_HEX[i], name:p.name, pts});
   });
   if(series.length===0){ wrap.innerHTML='<div class="empty">'+(isPct?"목표를 설정하면 달성률이 표시됩니다.":"표시할 데이터가 없습니다.")+'</div>'; return; }
-  const W=680,H=300,padL=46,padR=16,padT=16,padB=34;
+  const W=680,H=320,padL=48,padR=30,padT=34,padB=38;       // 여백 확대(레이블 잘림 방지)
+  const dim={W,padL,padR,padT};
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
   series.forEach(s=>s.pts.forEach(pt=>{ minX=Math.min(minX,pt.t);maxX=Math.max(maxX,pt.t);minY=Math.min(minY,pt.v);maxY=Math.max(maxY,pt.v); }));
   if(mode==="delta"){ minY=Math.min(minY,0); maxY=Math.max(maxY,0); }
   if(mode==="goal"){ minY=Math.min(minY,0); maxY=Math.max(maxY,100); }   // 0%·100% 기준 포함
-  const padY=Math.max(isPct?2:0.5,(maxY-minY)*0.12); minY-=padY; maxY+=padY;
+  const padY=Math.max(isPct?3:0.6,(maxY-minY)*0.18); minY-=padY; maxY+=padY;
   const spanX=maxX-minX||1, spanY=maxY-minY||1;
   const px=t=>padL+((t-minX)/spanX)*(W-padL-padR); const py=val=>padT+(1-(val-minY)/spanY)*(H-padT-padB);
   let svg='<svg class="chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">';
@@ -1059,17 +1085,21 @@ function drawCompareChart(wrap){
     svg+='<text x="'+(padL-6)+'" y="'+(y+4)+'" font-size="11" fill="'+C_AXIS+'" text-anchor="end">'+lbl+'</text>'; }
   // 기준선: 변화량=0, 달성률=100%
   if(mode==="delta"){ const zy=py(0); svg+='<line x1="'+padL+'" y1="'+zy+'" x2="'+(W-padR)+'" y2="'+zy+'" stroke="'+C_ZERO+'" stroke-width="1.5"/>'; }
-  if(mode==="goal" && 100>=minY && 100<=maxY){ const gy=py(100); svg+='<line x1="'+padL+'" y1="'+gy+'" x2="'+(W-padR)+'" y2="'+gy+'" stroke="'+C_GOAL+'" stroke-width="1.5" stroke-dasharray="6 4"/><text x="'+(W-padR)+'" y="'+(gy-5)+'" font-size="10" fill="'+C_GOAL+'" text-anchor="end" font-weight="700">목표 100%</text>'; }
-  // x축 라벨
+  if(mode==="goal" && 100>=minY && 100<=maxY){ const gy=py(100); svg+='<line x1="'+padL+'" y1="'+gy+'" x2="'+(W-padR)+'" y2="'+gy+'" stroke="'+C_GOAL+'" stroke-width="1.5" stroke-dasharray="6 4"/><text x="'+(padL+2)+'" y="'+(gy-5)+'" font-size="10" fill="'+C_GOAL+'" text-anchor="start" font-weight="700">목표 100%</text>'; }
+  // x축 라벨 (양끝 anchor 보정)
   const allTs=[...new Set(series.flatMap(s=>s.pts.map(p=>p.t)))].sort((a,b)=>a-b);
-  [allTs[0],allTs[Math.floor(allTs.length/2)],allTs[allTs.length-1]].filter((v,i,a)=>v!=null&&a.indexOf(v)===i).forEach(ts=>{
-    svg+='<text x="'+px(ts)+'" y="'+(H-12)+'" font-size="10" fill="'+C_AXIS+'" text-anchor="middle">'+fmtAxis(ts,gran)+'</text>'; });
+  const xl=[allTs[0],allTs[Math.floor(allTs.length/2)],allTs[allTs.length-1]].filter((v,i,a)=>v!=null&&a.indexOf(v)===i);
+  xl.forEach((ts,i)=>{ const anchor = i===0?"start":(i===xl.length-1?"end":"middle");
+    svg+='<text x="'+px(ts)+'" y="'+(H-12)+'" font-size="10" fill="'+C_AXIS+'" text-anchor="'+anchor+'">'+fmtAxis(ts,gran)+'</text>'; });
+  const fmtVal = isPct ? (v=>Math.round(v)+"%") : (mode==="delta" ? (v=>(v>0?"+":"")+round1(v).toFixed(1)) : (v=>fmtKg(v)));
   series.forEach(s=>{ let d='';
     s.pts.forEach((pt,i)=>{ d+=(i===0?"M":"L")+px(pt.t).toFixed(1)+" "+py(pt.v).toFixed(1)+" "; });
     svg+='<path d="'+d+'" fill="none" stroke="'+s.color+'" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>';
     s.pts.forEach(pt=>{ const tip=escapeHtml(s.name)+" · "+fmtAxis(pt.t,gran)+" · "+(isPct? Math.round(pt.v)+"% ("+fmtKg(pt.raw)+"kg)" : fmtKg(pt.raw)+"kg");
       svg+='<circle cx="'+px(pt.t)+'" cy="'+py(pt.v)+'" r="2.6" fill="var(--card-solid)" stroke="'+s.color+'" stroke-width="2"><title>'+tip+'</title></circle>'; });
   });
+  // 데이터 레이블 (각 사람 선마다 최대·최소·최종, 점 위쪽)
+  series.forEach(s=>{ svg+=dataLabels(s.pts, pt=>px(pt.t), pt=>py(pt.v), pt=>pt.v, fmtVal, s.color, dim); });
   svg+='</svg>'; wrap.innerHTML=svg;
 }
 
