@@ -595,6 +595,7 @@ function setSyncLabel(txt){$("#syncState").textContent=txt;}
 
 async function pushCloud(){
   if(!cfg.bin||!cfg.key)return;
+  if((state.people||[]).length===0 && !syncedOnce){ setSyncLabel("동기화 대기 중 (원격 데이터 보호)"); return; }  // 클라우드를 아직 못 읽은 빈 상태는 업로드 금지
   setSyncLabel("동기화 중...");
   try{
     const res=await fetch("https://api.jsonbin.io/v3/b/"+cfg.bin,{ method:"PUT",
@@ -603,7 +604,7 @@ async function pushCloud(){
     setSyncLabel("동기화됨 · "+nowTimeLabel());
   }catch(e){ setSyncLabel("동기화 실패(로컬 보관됨)"); }
 }
-let isSyncing=false, autoTimer=null;
+let isSyncing=false, autoTimer=null, syncedOnce=false;
 function nowTimeLabel(){ return new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"}); }
 
 /* 시각(u) + 삭제표식(tombstone) 기반 병합 — 삭제/수정이 부활하지 않도록 "가장 최근 동작이 이김" */
@@ -648,6 +649,7 @@ async function pullMerge(){
   const res=await fetch("https://api.jsonbin.io/v3/b/"+cfg.bin+"/latest",{headers:{"X-Master-Key":cfg.key}});
   if(!res.ok) throw new Error("HTTP "+res.status);
   const json=await res.json(); const remote=json.record;
+  syncedOnce=true;                       // 클라우드를 성공적으로 읽음 → 이후 업로드 허용
   if(!remote||!remote.people) return false;
   const before=JSON.stringify(mergeData(state, state).people);   // 자기 자신도 동일 정규화 → 키 순서 무관 비교
   const merged=mergeData(state, remote);
