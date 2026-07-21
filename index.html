@@ -187,10 +187,6 @@
   .ms-bar i{display:block; height:100%; border-radius:99px; background:linear-gradient(90deg,var(--accent),var(--accent2))}
 
   /* heatmap */
-  .hm-grid{display:grid; grid-auto-flow:column; grid-template-rows:repeat(7,1fr); gap:4px; margin-top:4px}
-  .hm-cell{width:100%; aspect-ratio:1; border-radius:4px; background:var(--line)}
-  .hm-on{background:linear-gradient(135deg,var(--accent),var(--accent2)); box-shadow:0 1px 3px rgba(13,148,136,.3)}
-  .hm-future{background:transparent}
 
   /* insights */
   .ins{display:flex; flex-direction:column; gap:9px}
@@ -398,22 +394,39 @@ const C_TREND= DARK ? "#64748b" : "#94a3b8";
 const C_GOAL = DARK ? "#d8b878" : "#b08642";
 const C_HALO = DARK ? "#111a2e" : "#ffffff";   // 데이터 레이블 외곽선(가독성)
 
-/* 선마다 최대·최소·최종값 데이터 레이블을 점 위쪽에 표시 (끝부분 잘림 방지용 anchor 보정) */
-function dataLabels(pts, getX, getY, getV, fmt, color, dim){
+/* 데이터 레이블 (점 위쪽 표시)
+   mode="all"  : 모든 점에 표시
+   mode="five" : 맨 끝(최종) 유지 + 중간을 4구간으로 나눠 총 5개
+   최대·최소는 항상 포함 */
+function labelIndices(pts, mode){
+  const n=pts.length; if(n===0) return [];
+  if(mode==="all") return pts.map((_,i)=>i);
+  const set=new Set([n-1]);                       // 맨 끝열 유지
+  const K=5;
+  for(let k=0;k<K-1;k++){                          // 중간부 4구간
+    const idx=Math.round((n-1)*k/(K-1));
+    set.add(Math.max(0,Math.min(n-1,idx)));
+  }
+  return [...set].sort((a,b)=>a-b);
+}
+function dataLabels(pts, getX, getY, getV, fmt, color, dim, mode){
   if(!pts || pts.length===0) return '';
   let maxI=0, minI=0;
   pts.forEach((p,i)=>{ if(getV(p)>getV(pts[maxI])) maxI=i; if(getV(p)<getV(pts[minI])) minI=i; });
-  const lastI=pts.length-1;
-  const idxs=[...new Set([maxI,minI,lastI])];
-  let out='';
+  const idxs=[...new Set([...labelIndices(pts, mode||"five"), maxI, minI, pts.length-1])].sort((a,b)=>a-b);
+  const FS=11.6;                                   // 기존 10.5 → 약 10% 확대
+  let out='', prevX=-1e9, prevY=-1e9;
   idxs.forEach(i=>{
-    const p=pts[i]; const x=getX(p); let y=getY(p)-9;
-    if(y < dim.padT+10) y=getY(p)+15;                 // 위 공간 부족하면 아래로
+    const p=pts[i]; const x=getX(p); const baseY=getY(p);
+    let y=baseY-10;
+    if(y < dim.padT+11) y=baseY+16;                // 위 공간 부족하면 아래로
+    if(Math.abs(x-prevX)<26 && Math.abs(y-prevY)<12) y = (y>prevY? y+12 : y-12);  // 겹침 회피
     let anchor="middle", tx=x;
-    if(x < dim.padL+18){ anchor="start"; tx=x-3; }
-    else if(x > dim.W-dim.padR-18){ anchor="end"; tx=x+3; }
-    out+='<text x="'+tx+'" y="'+y+'" font-size="10.5" font-weight="800" text-anchor="'+anchor+'" '+
-         'paint-order="stroke" stroke="'+C_HALO+'" stroke-width="3.2" stroke-linejoin="round" fill="'+color+'">'+fmt(getV(p))+'</text>';
+    if(x < dim.padL+20){ anchor="start"; tx=x-3; }
+    else if(x > dim.W-dim.padR-20){ anchor="end"; tx=x+3; }
+    out+='<text x="'+tx+'" y="'+y+'" font-size="'+FS+'" font-weight="800" text-anchor="'+anchor+'" '+
+         'paint-order="stroke" stroke="'+C_HALO+'" stroke-width="3.4" stroke-linejoin="round" fill="'+color+'">'+fmt(getV(p))+'</text>';
+    prevX=x; prevY=y;
   });
   return out;
 }
@@ -818,13 +831,6 @@ function renderPerson(v,p){
   html+='<div class="chart-wrap" id="chartWrap"></div>';
   html+='<div class="rangebar">'+rangeBtns()+'</div></div>';
 
-  /* 일관성 + 히트맵 */
-  html+='<div class="card"><h2>기록 일관성</h2><div class="mini">';
-  html+='<div class="m"><div class="k">연속 기록</div><div class="v tnum">'+currentStreak(p)+'<small style="font-size:11px"> 일</small></div></div>';
-  html+='<div class="m"><div class="k">최장 연속</div><div class="v tnum">'+longestStreak(p)+'<small style="font-size:11px"> 일</small></div></div>';
-  html+='<div class="m"><div class="k">이번 달</div><div class="v tnum">'+loggedThisMonth(p)+'<small style="font-size:11px"> 일</small></div></div>';
-  html+='</div><div style="margin-top:14px"><div class="small muted" style="margin-bottom:8px">최근 12주 기록</div>'+heatmapHTML(p)+'</div></div>';
-
   /* 인사이트 */
   const ins=buildInsights(p);
   if(ins.length){
@@ -933,21 +939,6 @@ function filterByRange(recs){
   const cut=lastDate-(ui.range-1)*86400000;
   return recs.filter(r=>parseDate(r.date).getTime()>=cut);
 }
-function heatmapHTML(p){
-  const set=loggedSet(p); const weights={}; (p.records||[]).forEach(r=>weights[r.date]=r.weight);
-  const today=new Date(); today.setHours(0,0,0,0);
-  const dow=(today.getDay()+6)%7; const startMon=new Date(today.getTime()-(dow+7*11)*86400000);
-  let cells='';
-  for(let w=0; w<12; w++){
-    for(let d=0; d<7; d++){
-      const dt=new Date(startMon.getTime()+(w*7+d)*86400000);
-      if(dt>today){ cells+='<div class="hm-cell hm-future"></div>'; continue; }
-      const ds=dateStr(dt); const on=set.has(ds);
-      cells+='<div class="hm-cell'+(on?' hm-on':'')+'" title="'+ds+(on?' · '+fmtKg(weights[ds])+'kg':'')+'"></div>';
-    }
-  }
-  return '<div class="hm-grid">'+cells+'</div>';
-}
 function drawMetricChart(wrap,p,key){
   const def=metricDef(key);
   const all=recsWith(p,key);
@@ -994,8 +985,9 @@ function drawMetricChart(wrap,p,key){
     svg+='<path d="'+dm+'" fill="none" stroke="'+def.color+'" stroke-width="2.6" stroke-linejoin="round" stroke-linecap="round"/>'; }
   recs.forEach(r=>{ const x=px(parseDate(r.date).getTime()), y=py(r[key]);
     svg+='<circle cx="'+x+'" cy="'+y+'" r="2.6" fill="var(--card-solid)" stroke="'+def.color+'" stroke-width="2"><title>'+r.date+" · "+fmtN(r[key])+def.unit+'</title></circle>'; });
-  // 데이터 레이블 (최대·최소·최종, 점 위쪽)
-  svg+=dataLabels(recs, r=>px(parseDate(r.date).getTime()), r=>py(r[key]), r=>r[key], v=>fmtN(v), def.color, dim);
+  // 데이터 레이블 (7일=전체 표시, 그 외=5개)
+  const labMode = (ui.range===7) ? "all" : "five";
+  svg+=dataLabels(recs, r=>px(parseDate(r.date).getTime()), r=>py(r[key]), r=>r[key], v=>fmtN(v), def.color, dim, labMode);
   svg+='</svg>';
   let leg='<div class="legend"><span><span class="dot" style="background:'+def.color+'"></span>'+def.label+'(일별)</span>'+
           '<span><span class="dot" style="background:'+def.color+'"></span>7일 평균</span>'+
@@ -1100,8 +1092,9 @@ function drawCompareChart(wrap){
     s.pts.forEach(pt=>{ const tip=escapeHtml(s.name)+" · "+fmtAxis(pt.t,gran)+" · "+(isPct? Math.round(pt.v)+"% ("+fmtKg(pt.raw)+"kg)" : fmtKg(pt.raw)+"kg");
       svg+='<circle cx="'+px(pt.t)+'" cy="'+py(pt.v)+'" r="2.6" fill="var(--card-solid)" stroke="'+s.color+'" stroke-width="2"><title>'+tip+'</title></circle>'; });
   });
-  // 데이터 레이블 (각 사람 선마다 최대·최소·최종, 점 위쪽)
-  series.forEach(s=>{ svg+=dataLabels(s.pts, pt=>px(pt.t), pt=>py(pt.v), pt=>pt.v, fmtVal, s.color, dim); });
+  // 데이터 레이블 (일자별=5개, 주차별·전체=모든 점)
+  const cmpLabMode = (gran==="day") ? "five" : "all";
+  series.forEach(s=>{ svg+=dataLabels(s.pts, pt=>px(pt.t), pt=>py(pt.v), pt=>pt.v, fmtVal, s.color, dim, cmpLabMode); });
   svg+='</svg>'; wrap.innerHTML=svg;
 }
 
