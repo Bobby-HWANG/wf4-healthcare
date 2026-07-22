@@ -1057,7 +1057,7 @@ function drawCompareChart(wrap){
       let v;
       if(mode==="abs") v=a.w;
       else if(mode==="delta") v=a.w-start;
-      else v=(start-a.w)/(start-p.goalWeight)*100;   // 목표 달성률 %
+      else { v=(start-a.w)/(start-p.goalWeight)*100; v=Math.max(0, Math.min(120, v)); }   // 목표 달성률 %: 0~120%로 고정(음수→0%)
       return {t:a.t, v, raw:a.w};
     });
     series.push({color:COLOR_HEX[i], name:p.name, pts});
@@ -1068,8 +1068,9 @@ function drawCompareChart(wrap){
   let minX=Infinity,maxX=-Infinity,minY=Infinity,maxY=-Infinity;
   series.forEach(s=>s.pts.forEach(pt=>{ minX=Math.min(minX,pt.t);maxX=Math.max(maxX,pt.t);minY=Math.min(minY,pt.v);maxY=Math.max(maxY,pt.v); }));
   if(mode==="delta"){ minY=Math.min(minY,0); maxY=Math.max(maxY,0); }
-  if(mode==="goal"){ minY=Math.min(minY,0); maxY=Math.max(maxY,100); }   // 0%·100% 기준 포함
-  const padY=Math.max(isPct?3:0.6,(maxY-minY)*0.18); minY-=padY; maxY+=padY;
+  if(mode==="goal"){ minY=0; maxY=120; }   // 달성률: 하한 0% · 상한 120% 고정
+  const padY = mode==="goal" ? 0 : Math.max(isPct?3:0.6,(maxY-minY)*0.18);
+  minY-=padY; maxY+=padY;
   const spanX=maxX-minX||1, spanY=maxY-minY||1;
   const px=t=>padL+((t-minX)/spanX)*(W-padL-padR); const py=val=>padT+(1-(val-minY)/spanY)*(H-padT-padB);
   let svg='<svg class="chart" viewBox="0 0 '+W+' '+H+'" preserveAspectRatio="xMidYMid meet">';
