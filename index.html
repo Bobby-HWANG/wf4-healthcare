@@ -344,7 +344,24 @@
     <button class="btn gold" id="btnExportCSV">CSV 내보내기 (엑셀)</button>
     <button class="btn ghost" onclick="closeBackup()">닫기</button>
   </div>
+  <div class="hr"></div>
+  <p class="desc" style="margin-bottom:8px">과거 버전에서 자동 생성된 기록(<b>자동</b> 배지)이 남아 있다면 한 번에 지울 수 있습니다. 직접 입력한 기록은 지워지지 않습니다.</p>
+  <div class="sheet-actions">
+    <button class="btn danger" id="btnPurgeAuto">자동 기록 일괄 삭제</button>
+  </div>
   <input id="importFile" type="file" accept="application/json,.json" class="hide">
+</div></div>
+
+<!-- 복원 대상 선택 시트 -->
+<div class="overlay" id="pickOverlay"><div class="sheet">
+  <div class="grip"></div>
+  <h3>복원할 사람 선택</h3>
+  <p class="desc">백업 파일에서 <b>선택한 사람만</b> 복원합니다. 현재 기록은 지우지 않고 빠진 것만 채웁니다.</p>
+  <div id="pickList" class="ladder" style="margin-bottom:6px"></div>
+  <div class="sheet-actions">
+    <button class="btn ghost" onclick="closePick()">취소</button>
+    <button class="btn" id="btnDoRestore">선택 복원</button>
+  </div>
 </div></div>
 
 <div class="toast" id="toast"></div>
@@ -639,9 +656,15 @@ function mergeData(local, remote){
     ["name","height","birthYear","startWeight","goalWeight","goalDate"].forEach(k=>{
       merged[k] = (pri && pri[k]!=null) ? pri[k] : (sec && sec[k]!=null ? sec[k] : null);
     });
-    // 기록 병합: 날짜별로 u가 큰 쪽 채택
+    // 기록 병합: 수동 입력이 자동(carry-forward)보다 항상 우선. 같은 종류면 u가 큰 쪽 채택
     const recMap={};
-    [a,b].forEach(s=>{ (s&&s.records||[]).forEach(r=>{ if(!r||!r.date)return; const ex=recMap[r.date]; if(!ex || (r.u||0)>=(ex.u||0)) recMap[r.date]=r; }); });
+    [a,b].forEach(s=>{ (s&&s.records||[]).forEach(r=>{ if(!r||!r.date)return;
+      const ex=recMap[r.date];
+      if(!ex){ recMap[r.date]=r; return; }
+      const rAuto=!!r.auto, exAuto=!!ex.auto;
+      if(rAuto!==exAuto){ if(!rAuto) recMap[r.date]=r; return; }   // 수동 우선 (자동은 절대 수동을 덮지 않음)
+      if((r.u||0)>=(ex.u||0)) recMap[r.date]=r;
+    }); });
     // 기록 삭제표식 병합 (날짜 -> 삭제시각)
     const del={};
     [a,b].forEach(s=>{ const m=(s&&s.del)||{}; for(const k in m) del[k]=Math.max(del[k]||0, m[k]||0); });
@@ -1223,19 +1246,93 @@ $("#btnExportCSV").onclick=()=>{
   downloadFile("wf4_records_"+todayStr()+".csv", csv, "text/csv;charset=utf-8"); toast("CSV 내보냄");
 };
 $("#btnImportJSON").onclick=()=>$("#importFile").click();
+
+/* 과거 버전이 만든 자동 기록 일괄 삭제 (수동 기록은 보존) */
+$("#btnPurgeAuto").onclick=async()=>{
+  let n=0; const detail=[];
+  (state.people||[]).forEach(p=>{
+    const autos=(p.records||[]).filter(r=>r.auto);
+    if(autos.length===0) return;
+    detail.push(p.name+" "+autos.length+"건"); n+=autos.length;
+  });
+  if(n===0){ toast("자동 생성된 기록이 없습니다"); return; }
+  if(!confirm("자동 기록 "+n+"건을 삭제합니다.\n("+detail.join(", ")+")\n\n직접 입력한 기록은 그대로 유지됩니다. 진행할까요?")) return;
+  (state.people||[]).forEach(p=>{
+    p.del=p.del||{};
+    (p.records||[]).filter(r=>r.auto).forEach(r=>{ p.del[r.date]=Date.now(); });   // 삭제표식(다른 기기에서 부활 방지)
+    p.records=(p.records||[]).filter(r=>!r.auto);
+  });
+  persistLocal(); render(); try{ await save(); }catch(_){}
+  toast("자동 기록 "+n+"건 삭제됨"); closeBackup();
+};
+let pendingBackup=null;
+function closePick(){ $("#pickOverlay").classList.remove("show"); }
+
+/* 백업 파일에서 이 사람에게 복원될 건수 미리 계산 */
+function previewRestore(bp){
+  const cur=state.people.find(x=>x.id===bp.id) || state.people.find(x=>x.name===bp.name);
+  if(!cur) return { isNew:true, n:(bp.records||[]).filter(r=>!r.auto).length };
+  let n=0;
+  (bp.records||[]).forEach(br=>{
+    if(!br||!br.date||br.auto) return;
+    const ex=(cur.records||[]).find(r=>r.date===br.date);
+    if(!ex) n++;
+    else if(ex.auto) n++;
+  });
+  return { isNew:false, n };
+}
+
 $("#importFile").onchange=e=>{
   const file=e.target.files&&e.target.files[0]; e.target.value=""; if(!file) return;
   const reader=new FileReader();
-  reader.onload=async()=>{
+  reader.onload=()=>{
     try{
       const obj=JSON.parse(reader.result);
       if(!obj||!Array.isArray(obj.people)) throw new Error("형식이 올바르지 않습니다");
-      if(!confirm("가져오면 현재 데이터와 병합됩니다(덮어쓰지 않음). 진행할까요?")) return;
-      state=mergeData(state, obj); persistLocal(); render(); try{ await save(); }catch(_){}
-      toast("가져오기 완료(병합)"); closeBackup();
+      pendingBackup=obj;
+      const list=$("#pickList"); list.innerHTML="";
+      obj.people.forEach((bp,i)=>{
+        if(!bp) return;
+        const pv=previewRestore(bp);
+        const dis = pv.n===0 ? ' style="opacity:.5"' : '';
+        const note = pv.isNew ? "전체 복구 "+pv.n+"건" : (pv.n>0 ? "복원 "+pv.n+"건" : "복원할 항목 없음");
+        list.innerHTML+='<label class="lad"'+dis+'>'+
+          '<input type="checkbox" class="pickCb" data-i="'+i+'" '+(pv.n>0?"checked":"disabled")+' style="width:18px;height:18px;flex:0 0 auto;margin-right:4px">'+
+          '<span class="nm"><span class="t">'+escapeHtml(bp.name||"이름없음")+'</span>'+
+          '<span class="b">'+note+'</span></span></label>';
+      });
+      if(!list.innerHTML) { toast("백업에 사람 데이터가 없습니다"); return; }
+      $("#pickOverlay").classList.add("show");
     }catch(err){ toast("가져오기 실패: "+err.message); }
   };
   reader.readAsText(file);
+};
+
+$("#btnDoRestore").onclick=async()=>{
+  if(!pendingBackup) return;
+  const picked=[...document.querySelectorAll(".pickCb:checked")].map(cb=>parseInt(cb.dataset.i));
+  if(picked.length===0){ toast("복원할 사람을 선택하세요"); return; }
+  let total=0; const detail=[];
+  picked.forEach(i=>{
+    const bp=pendingBackup.people[i]; if(!bp) return;
+    let cur=state.people.find(x=>x.id===bp.id) || state.people.find(x=>x.name===bp.name);
+    if(!cur){ state.people.push(JSON.parse(JSON.stringify(bp)));
+      const n=(bp.records||[]).length; total+=n; detail.push(bp.name+" 전체 복구("+n+")"); return; }
+    cur.records=cur.records||[]; cur.del=cur.del||{};
+    let n=0;
+    (bp.records||[]).forEach(br=>{
+      if(!br||!br.date||br.auto) return;                       // 백업의 자동 기록은 복원 안 함
+      const ex=cur.records.find(r=>r.date===br.date);
+      if(!ex){ cur.records.push({...br, u:br.u||Date.now()}); n++; return; }
+      if(ex.auto){ Object.assign(ex, br); delete ex.auto; ex.u=Date.now(); n++; }   // 자동으로 덮인 날 → 실제 기록으로 되살림
+    });
+    cur.records.sort((a,b)=>a.date<b.date?-1:1);
+    if(n>0){ total+=n; detail.push(cur.name+" "+n+"건"); }
+  });
+  if(total===0){ toast("복원할 항목이 없습니다"); return; }
+  if(!confirm("복원: "+detail.join(", ")+"\n\n현재 기록은 지우지 않고 빠진 것만 채웁니다. 진행할까요?")) return;
+  persistLocal(); render(); try{ await save(); }catch(_){}
+  toast("복원 완료 · "+total+"건"); closePick(); closeBackup(); pendingBackup=null;
 };
 
 /* ============ 결과지 공유 (현재 화면 → 이미지 → 카톡/문자) ============ */
@@ -1313,36 +1410,6 @@ document.querySelectorAll(".overlay").forEach(o=>{
   o.addEventListener("click",e=>{ if(startedOnBackdrop && e.target===o) o.classList.remove("show"); startedOnBackdrop=false; });
 });
 
-/* ============ 전일 미입력 자동 보정 (전일 데이터 이어받기) ============ */
-/* 00시 기준으로 날짜가 넘어간 뒤, 마지막 기록일 다음날부터 '어제'까지 비어 있으면
-   가장 최근 체중을 그대로 이어서 자동 입력(carry-forward). 직접 삭제한 날(삭제표식)은 건드리지 않음. */
-function autoFillMissing(){
-  const MAX_FILL=60;                       // 안전장치: 한 번에 최대 60일까지만 채움
-  const yest=new Date(); yest.setHours(0,0,0,0); yest.setDate(yest.getDate()-1);
-  let filled=0;
-  (state.people||[]).forEach(p=>{
-    const recs=sortedRecords(p); if(recs.length===0) return;
-    const last=recs[recs.length-1];
-    let lastW=last.weight;
-    let cursor=parseDate(last.date); cursor.setDate(cursor.getDate()+1);
-    const have=new Set((p.records||[]).map(r=>r.date));
-    let count=0;
-    while(cursor.getTime()<=yest.getTime() && count<MAX_FILL){
-      const ds=dateStr(cursor);
-      const tomb = p.del && p.del[ds];     // 직접 삭제한 날이면 건너뜀
-      if(!have.has(ds) && !tomb){
-        p.records.push({ date:ds, weight:round1(lastW), auto:true, u:Date.now() });
-        have.add(ds); filled++;
-      } else if(have.has(ds)){
-        const r=p.records.find(x=>x.date===ds); if(r&&r.weight!=null) lastW=r.weight;   // 중간에 실제 기록이 있으면 그 값으로 이어감
-      }
-      cursor.setDate(cursor.getDate()+1); count++;
-    }
-    if(p.records) p.records.sort((a,b)=>a.date<b.date?-1:1);
-  });
-  return filled;
-}
-
 /* ============ 초기화 ============ */
 async function init(){
   loadLocal();
@@ -1350,17 +1417,13 @@ async function init(){
   if(cfg.bin&&cfg.key){
     setSyncLabel("동기화 중...");
     isSyncing=true;
-    try{ await pullMerge(); }catch(e){}     // 먼저 최신을 받아 다른 기기의 실제 기록을 덮어쓰지 않게
-    const filled=autoFillMissing();
+    let pulled=false;
+    try{ await pullMerge(); pulled=true; }catch(e){ pulled=false; }
     isSyncing=false;
     render();
-    if(filled>0) toast("전일 미입력 "+filled+"일을 직전 체중으로 자동 입력했어요");
-    try{ await save(); }catch(e){}
+    if(!pulled) setSyncLabel("동기화 실패 — 나중에 다시 시도");
     startAutoSync();
   }else{
-    const filled=autoFillMissing();
-    render();
-    if(filled>0){ toast("전일 미입력 "+filled+"일을 직전 체중으로 자동 입력했어요"); save(); }
     setSyncLabel("로컬 모드");
   }
 }
