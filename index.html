@@ -700,7 +700,11 @@ function isEditing(){
 async function autoSyncTick(){
   if(isSyncing || !cfg.bin || !cfg.key) return;
   isSyncing=true;
-  try{ const changed=await pullMerge(); if(changed && !isEditing()) render(); setSyncLabel("동기화됨 · "+nowTimeLabel()); }
+  try{ const changed=await pullMerge();
+       const purged=purgeAutoRecords();                     // 옛 기기가 올린 자동 기록 즉시 제거
+       if(purged>0) persistLocal();
+       if((changed||purged>0) && !isEditing()) render();
+       setSyncLabel("동기화됨 · "+nowTimeLabel()); }
   catch(e){ setSyncLabel("동기화 대기 중"); } finally{ isSyncing=false; }
 }
 function startAutoSync(){ if(autoTimer){ clearInterval(autoTimer); autoTimer=null; } if(!cfg.bin||!cfg.key) return; autoTimer=setInterval(autoSyncTick, 15000); }
@@ -1411,19 +1415,36 @@ document.querySelectorAll(".overlay").forEach(o=>{
 });
 
 /* ============ 초기화 ============ */
+/* 과거 버전이 만든 자동 기록을 시작 시 자동 제거 (수동 기록은 그대로) */
+function purgeAutoRecords(){
+  let n=0;
+  (state.people||[]).forEach(p=>{
+    const autos=(p.records||[]).filter(r=>r.auto);
+    if(autos.length===0) return;
+    p.del=p.del||{};
+    autos.forEach(r=>{ p.del[r.date]=Date.now(); });        // 삭제표식 → 다른 기기에서 부활 방지
+    p.records=(p.records||[]).filter(r=>!r.auto);
+    n+=autos.length;
+  });
+  return n;
+}
 async function init(){
   loadLocal();
+  let purged=purgeAutoRecords();
   render();
   if(cfg.bin&&cfg.key){
     setSyncLabel("동기화 중...");
     isSyncing=true;
     let pulled=false;
     try{ await pullMerge(); pulled=true; }catch(e){ pulled=false; }
+    purged+=purgeAutoRecords();                             // 클라우드에서 딸려온 자동 기록도 제거
     isSyncing=false;
     render();
     if(!pulled) setSyncLabel("동기화 실패 — 나중에 다시 시도");
+    if(purged>0){ toast("자동 생성된 기록 "+purged+"건을 정리했어요"); try{ await save(); }catch(e){} }
     startAutoSync();
   }else{
+    if(purged>0){ toast("자동 생성된 기록 "+purged+"건을 정리했어요"); persistLocal(); render(); }
     setSyncLabel("로컬 모드");
   }
 }
