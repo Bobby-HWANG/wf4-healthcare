@@ -597,7 +597,7 @@ function loadLocal(){
   if(!state.delPeople) state.delPeople={};
   (state.people||[]).forEach(p=>{ if(!p.del) p.del={}; });
 }
-function persistLocal(){ state.updatedAt=new Date().toISOString(); localStorage.setItem(LS_DATA,JSON.stringify(state)); }
+function persistLocal(){ state.updatedAt=new Date().toISOString(); localStorage.setItem(LS_DATA,JSON.stringify(state)); dirty=true; }
 async function save(){
   persistLocal();
   if(cfg.bin&&cfg.key){
@@ -616,11 +616,13 @@ async function pushCloud(){
   try{
     const res=await fetch("https://api.jsonbin.io/v3/b/"+cfg.bin,{ method:"PUT",
       headers:{"Content-Type":"application/json","X-Master-Key":cfg.key}, body:JSON.stringify(state) });
+    if(res.status===429) throw new Error("RATE");
     if(!res.ok)throw new Error("HTTP "+res.status);
+    dirty=false;
     setSyncLabel("동기화됨 · "+nowTimeLabel());
-  }catch(e){ setSyncLabel("동기화 실패(로컬 보관됨)"); }
+  }catch(e){ setSyncLabel(e&&e.message==="RATE" ? "요청 한도 초과 — 잠시 후 자동 재시도" : "동기화 실패(로컬 보관됨)"); }
 }
-let isSyncing=false, autoTimer=null, syncedOnce=false;
+let isSyncing=false, autoTimer=null, syncedOnce=false, dirty=false;
 function nowTimeLabel(){ return new Date().toLocaleTimeString("ko-KR",{hour:"2-digit",minute:"2-digit"}); }
 
 /* 시각(u) + 삭제표식(tombstone) 기반 병합 — 삭제/수정이 부활하지 않도록 "가장 최근 동작이 이김" */
@@ -689,11 +691,13 @@ async function autoSyncTick(){
   try{ const changed=await pullMerge();
        const purged=purgeAutoRecords();                     // 옛 기기가 올린 자동 기록 즉시 제거
        if(purged>0) persistLocal();
+       if(dirty) await pushCloud();                         // 이전에 못 올린 로컬 변경 재전송
        if((changed||purged>0) && !isEditing()) render();
        setSyncLabel("동기화됨 · "+nowTimeLabel()); }
-  catch(e){ setSyncLabel("동기화 대기 중"); } finally{ isSyncing=false; }
+  catch(e){ setSyncLabel(String(e&&e.message).includes("429") ? "요청 한도 초과 — 잠시 후 재시도" : "동기화 대기 중"); } finally{ isSyncing=false; }
 }
-function startAutoSync(){ if(autoTimer){ clearInterval(autoTimer); autoTimer=null; } if(!cfg.bin||!cfg.key) return; autoTimer=setInterval(autoSyncTick, 15000); }
+/* 무료 요청한도(월 1만) 보호: 15초 폴링 제거 → 화면을 볼 때만 5분 간격 + 포커스/복귀 시 동기화 */
+function startAutoSync(){ if(autoTimer){ clearInterval(autoTimer); autoTimer=null; } if(!cfg.bin||!cfg.key) return; autoTimer=setInterval(()=>{ if(!document.hidden) autoSyncTick(); }, 300000); }
 window.addEventListener("focus", autoSyncTick);
 document.addEventListener("visibilitychange", ()=>{ if(!document.hidden) autoSyncTick(); });
 
