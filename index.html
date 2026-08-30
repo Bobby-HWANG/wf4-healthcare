@@ -360,6 +360,23 @@ const LS_DATA="wf4_data", LS_CFG="wf4_cfg";
 const MAX_PEOPLE=4;
 const COLOR_HEX=["#0d9488","#3b82f6","#f59e0b","#a855f7"];
 
+/* 같은 Bin을 다른 앱과 공유하되, 이 앱은 자기 그룹 멤버만 표시 */
+const APP_GROUP="wf4";
+const OWN_NAMES=["황인학","이준서","정석","진정우"];
+function ownsPerson(p){ return !!p && (p.grp===APP_GROUP || (!p.grp && OWN_NAMES.indexOf(p.name)>=0)); }
+function ownPeople(){ return (state.people||[]).filter(ownsPerson); }
+// NOTE: ownPeople()/OWN_NAMES only filter what's SHOWN — they don't stop this app's
+// raw state.people from absorbing another app's people via pullMerge(), and don't
+// stop pushCloud() from re-uploading that mixed state and overwriting the other app's
+// data (a jsonbin PUT replaces the ENTIRE bin body). NS/remoteFullCache below fix the
+// actual storage: this app only ever reads/writes its own "wf4" slot inside the shared
+// bin, so a sibling app's slot is never touched. PRUNE_FLAG_KEY runs a one-time cleanup
+// (below, in init()) that drops any already-absorbed non-owned people out of
+// state.people itself, using the same OWN_NAMES/grp rule as ownPeople().
+const NS="wf4";
+let remoteFullCache=null;
+const PRUNE_FLAG_KEY="wf4_pruned_v1";
+
 let state={ people:[], delPeople:{}, updatedAt:null };
 let cfg={ bin:"", key:"" };
 let ui={ tab:"compare", range:30, cmpMode:"goal", cmpGran:"day", metric:"weight", showMetricInput:false };
@@ -591,11 +608,13 @@ function buildInsights(p){
 }
 
 /* ============ 저장 / 로드 ============ */
+function tagOwnMembers(){ (state.people||[]).forEach(p=>{ if(!p.grp && OWN_NAMES.indexOf(p.name)>=0) p.grp=APP_GROUP; }); }
 function loadLocal(){
   try{const d=JSON.parse(localStorage.getItem(LS_DATA));if(d&&d.people)state=d;}catch(e){}
   try{const c=JSON.parse(localStorage.getItem(LS_CFG));if(c)cfg=c;}catch(e){}
   if(!state.delPeople) state.delPeople={};
   (state.people||[]).forEach(p=>{ if(!p.del) p.del={}; });
+  tagOwnMembers();
 }
 function persistLocal(){ state.updatedAt=new Date().toISOString(); localStorage.setItem(LS_DATA,JSON.stringify(state)); dirty=true; }
 async function save(){
@@ -614,8 +633,12 @@ async function pushCloud(){
   if((state.people||[]).length===0 && !syncedOnce){ setSyncLabel("동기화 대기 중 (원격 데이터 보호)"); return; }  // 클라우드를 아직 못 읽은 빈 상태는 업로드 금지
   setSyncLabel("동기화 중...");
   try{
+    // 이 Bin은 다른 앱과 함께 쓰일 수 있음 — 전체를 덮어쓰지 않고 내 자리(NS)만 교체
+    const base=(remoteFullCache&&typeof remoteFullCache==="object"&&!Array.isArray(remoteFullCache))?{...remoteFullCache}:{};
+    base[NS]=state;
+    remoteFullCache=base;
     const res=await fetch("https://api.jsonbin.io/v3/b/"+cfg.bin,{ method:"PUT",
-      headers:{"Content-Type":"application/json","X-Master-Key":cfg.key}, body:JSON.stringify(state) });
+      headers:{"Content-Type":"application/json","X-Master-Key":cfg.key}, body:JSON.stringify(base) });
     if(res.status===429) throw new Error("RATE");
     if(!res.ok)throw new Error("HTTP "+res.status);
     dirty=false;
@@ -672,12 +695,15 @@ async function pullMerge(){
   if(!cfg.bin||!cfg.key) return false;
   const res=await fetch("https://api.jsonbin.io/v3/b/"+cfg.bin+"/latest",{headers:{"X-Master-Key":cfg.key}});
   if(!res.ok) throw new Error("HTTP "+res.status);
-  const json=await res.json(); const remote=json.record;
+  const json=await res.json(); const full=json.record;
+  remoteFullCache=(full&&typeof full==="object"&&!Array.isArray(full))?full:null;
   syncedOnce=true;                       // 클라우드를 성공적으로 읽음 → 이후 업로드 허용
+  // 이 Bin이 다른 앱과 공유될 수 있으므로 내 자리(NS)만 읽는다 — 다른 앱의 사람이 섞여 들어오지 않음
+  const remote=remoteFullCache?remoteFullCache[NS]:null;
   if(!remote||!remote.people) return false;
   const before=JSON.stringify(mergeData(state, state).people);   // 자기 자신도 동일 정규화 → 키 순서 무관 비교
   const merged=mergeData(state, remote);
-  if(JSON.stringify(merged.people)!==before){ state=merged; localStorage.setItem(LS_DATA,JSON.stringify(state)); return true; }
+  if(JSON.stringify(merged.people)!==before){ state=merged; tagOwnMembers(); localStorage.setItem(LS_DATA,JSON.stringify(state)); return true; }
   return false;
 }
 function isEditing(){
@@ -708,24 +734,25 @@ function renderTabs(){
   const c=document.createElement("button");
   c.className="tab compare"+(ui.tab==="compare"?" active":""); c.textContent="비교";
   c.onclick=()=>{ui.tab="compare";render();}; t.appendChild(c);
-  state.people.forEach((p,i)=>{
+  ownPeople().forEach((p,i)=>{
     const b=document.createElement("button");
     b.className="tab"+(ui.tab===p.id?" active":"");
     b.innerHTML='<span class="dot" style="background:'+COLOR_HEX[i]+'"></span>'+escapeHtml(p.name);
     b.onclick=()=>{ui.tab=p.id;render();}; t.appendChild(b);
   });
-  if(state.people.length<MAX_PEOPLE){
+  if(ownPeople().length<MAX_PEOPLE){
     const a=document.createElement("button"); a.className="tab add"; a.textContent="+ 사람 추가";
     a.onclick=()=>openPerson(null); t.appendChild(a);
   }
 }
 function renderView(){
   const v=$("#view");
-  if(state.people.length===0){
+  const mine=ownPeople();
+  if(mine.length===0){
     v.innerHTML='<div class="card"><div class="empty">아직 등록된 사람이 없습니다.<br>위의 <b>+ 사람 추가</b>를 눌러 시작하세요.</div></div>'; return;
   }
-  if(ui.tab==="compare"||!state.people.find(p=>p.id===ui.tab)){ if(ui.tab!=="compare")ui.tab="compare"; renderCompare(v); return; }
-  renderPerson(v, state.people.find(p=>p.id===ui.tab));
+  if(ui.tab==="compare" || !mine.find(p=>p.id===ui.tab)){ if(ui.tab!=="compare")ui.tab="compare"; renderCompare(v); return; }
+  renderPerson(v, mine.find(p=>p.id===ui.tab));
 }
 
 function statCard(label,val,cls){ return '<div class="stat"><div class="label">'+label+'</div><div class="val tnum '+(cls||"")+'">'+val+'</div></div>'; }
@@ -1016,8 +1043,9 @@ function drawMetricChart(wrap,p,key){
 
 /* ---------- 비교 화면 ---------- */
 function renderCompare(v){
+  const mine=ownPeople();
   let html='<div class="card"><h2>비교 분석</h2>';
-  if(state.people.length===0){ html+='<div class="empty">사람을 추가하면 비교가 표시됩니다.</div></div>'; v.innerHTML=html; return; }
+  if(mine.length===0){ html+='<div class="empty">사람을 추가하면 비교가 표시됩니다.</div></div>'; v.innerHTML=html; return; }
   // 모드 선택 (목표 달성률 / 시작 대비 변화량 / 실제 체중)
   const modes=[["goal","목표 달성률"],["delta","시작 대비 변화량"],["abs","실제 체중"]];
   html+='<div class="seg" style="margin-bottom:10px">'+modes.map(m=>'<button data-mode="'+m[0]+'" class="'+(ui.cmpMode===m[0]?"active":"")+'">'+m[1]+'</button>').join("")+'</div>';
@@ -1026,11 +1054,11 @@ function renderCompare(v){
   const grans=[["day","일자별"],["week","주차별"],["month","전체"]];
   html+='<div class="rangebar">'+grans.map(g=>'<button data-gran="'+g[0]+'" class="'+(ui.cmpGran===g[0]?"active":"")+'">'+g[1]+'</button>').join("")+'</div>';
   html+='<div class="legend">';
-  state.people.forEach((p,i)=>{ html+='<span><span class="dot" style="background:'+COLOR_HEX[i]+'"></span>'+escapeHtml(p.name)+'</span>'; });
+  mine.forEach((p,i)=>{ html+='<span><span class="dot" style="background:'+COLOR_HEX[i]+'"></span>'+escapeHtml(p.name)+'</span>'; });
   html+='</div></div>';
 
   html+='<div class="card"><h2>요약 비교</h2><table class="cmp"><thead><tr><th>이름</th><th>현재(kg)</th><th>시작대비</th><th>목표달성률</th></tr></thead><tbody>';
-  state.people.forEach((p,i)=>{
+  mine.forEach((p,i)=>{
     const last=latest(p); const cur=last?last.weight:null;
     const start=p.startWeight!=null?p.startWeight:(sortedRecords(p)[0]?sortedRecords(p)[0].weight:null);
     const delta=(cur!=null&&start!=null)?cur-start:null;
@@ -1052,10 +1080,12 @@ function aggregateRecords(recs, gran){
   if(gran==="day") return recs.map(r=>({t:parseDate(r.date).getTime(), w:r.weight}));
   const buckets={};
   recs.forEach(r=>{
-    const d=parseDate(r.date); let key, ts;
-    if(gran==="week"){ const dow=(d.getDay()+6)%7; const mon=new Date(d.getTime()-dow*86400000); mon.setHours(0,0,0,0); key=dateStr(mon); ts=mon.getTime(); }
-    else { key=d.getFullYear()+"-"+z2(d.getMonth()+1); ts=new Date(d.getFullYear(),d.getMonth(),15).getTime(); }
-    if(!buckets[key]) buckets[key]={sum:0,cnt:0,ts}; buckets[key].sum+=r.weight; buckets[key].cnt++;
+    const d=parseDate(r.date); let key; const t=d.getTime();
+    if(gran==="week"){ const dow=(d.getDay()+6)%7; const mon=new Date(d.getTime()-dow*86400000); mon.setHours(0,0,0,0); key=dateStr(mon); }
+    else { key=d.getFullYear()+"-"+z2(d.getMonth()+1); }
+    if(!buckets[key]) buckets[key]={sum:0,cnt:0,ts:t,lastW:r.weight,lastT:t};
+    buckets[key].sum+=r.weight; buckets[key].cnt++;
+    if(t>=buckets[key].lastT){ buckets[key].lastT=t; buckets[key].ts=t; buckets[key].lastW=r.weight; }   // 구간 내 최근 날짜/값
   });
   return Object.keys(buckets).sort().map(k=>({t:buckets[k].ts, w:buckets[k].sum/buckets[k].cnt}));
 }
@@ -1065,7 +1095,7 @@ function drawCompareChart(wrap){
   const mode=ui.cmpMode, gran=ui.cmpGran;
   const isPct=mode==="goal";
   const series=[];
-  state.people.forEach((p,i)=>{
+  ownPeople().forEach((p,i)=>{
     const wRecs=recsWith(p,"weight"); if(wRecs.length===0)return;
     const start=p.startWeight!=null?p.startWeight:wRecs[0].weight;
     if(mode==="goal" && (start==null||p.goalWeight==null||start===p.goalWeight)) return;  // 목표 없으면 달성률 생략
@@ -1168,8 +1198,8 @@ $("#btnSavePerson").onclick=()=>{
     const adult = obj.birthYear==null || (new Date().getFullYear()-obj.birthYear)>=19;
     if(adult && gbmi!=null && gbmi<18.5){ if(!confirm("설정한 목표 체중은 BMI "+gbmi.toFixed(1)+" (저체중)에 해당해요. 그대로 저장할까요?")) return; }
   }
-  if(personEditId){ const ex=state.people.find(x=>x.id===personEditId); Object.assign(ex,obj); ex.u=Date.now(); }
-  else{ if(state.people.length>=MAX_PEOPLE){toast("최대 4명까지 가능합니다");return;} const id=uid(); state.people.push({id,...obj,records:[],del:{},u:Date.now()}); ui.tab=id; }
+  if(personEditId){ const ex=state.people.find(x=>x.id===personEditId); Object.assign(ex,obj); ex.grp=APP_GROUP; ex.u=Date.now(); }
+  else{ if(ownPeople().length>=MAX_PEOPLE){toast("최대 4명까지 가능합니다");return;} const id=uid(); state.people.push({id,...obj,grp:APP_GROUP,records:[],del:{},u:Date.now()}); ui.tab=id; }
   save(); closePerson(); render(); toast("저장됨");
 };
 $("#btnDeletePerson").onclick=()=>{
@@ -1234,7 +1264,7 @@ function csvCell(s){ s=String(s==null?"":s); return /[",\r\n]/.test(s) ? '"'+s.r
 $("#btnExportJSON").onclick=()=>{ downloadFile("wf4_backup_"+todayStr()+".json", JSON.stringify(state,null,2), "application/json"); toast("JSON 백업 내보냄"); };
 $("#btnExportCSV").onclick=()=>{
   const rows=[["이름","날짜","체중(kg)","체지방률(%)","골격근량(kg)","허리둘레(cm)","메모"]];
-  state.people.forEach(p=>{ sortedRecords(p).forEach(r=>{ rows.push([p.name,r.date,fmtKg(r.weight), r.bodyFat!=null?fmtKg(r.bodyFat):"", r.muscle!=null?fmtKg(r.muscle):"", r.waist!=null?fmtKg(r.waist):"", r.memo||""]); }); });
+  ownPeople().forEach(p=>{ sortedRecords(p).forEach(r=>{ rows.push([p.name,r.date,fmtKg(r.weight), r.bodyFat!=null?fmtKg(r.bodyFat):"", r.muscle!=null?fmtKg(r.muscle):"", r.waist!=null?fmtKg(r.waist):"", r.memo||""]); }); });
   if(rows.length===1){ toast("내보낼 기록이 없습니다"); return; }
   const csv="\uFEFF"+rows.map(r=>r.map(csvCell).join(",")).join("\r\n");
   downloadFile("wf4_records_"+todayStr()+".csv", csv, "text/csv;charset=utf-8"); toast("CSV 내보냄");
@@ -1335,9 +1365,9 @@ function loadScript(src){ return new Promise((res,rej)=>{ if(window.html2canvas)
 
 $("#btnShare").onclick=()=>shareResult();
 async function shareResult(){
-  if(state.people.length===0){ toast("공유할 내용이 없습니다"); return; }
+  if(ownPeople().length===0){ toast("공유할 내용이 없습니다"); return; }
   const viewEl=$("#view");
-  const title = ui.tab==="compare" ? "전체 비교" : (state.people.find(p=>p.id===ui.tab)||{}).name || "결과지";
+  const title = ui.tab==="compare" ? "전체 비교" : (ownPeople().find(p=>p.id===ui.tab)||{}).name || "결과지";
   // 캡처 전 라이브 차트 크기 기록 (html2canvas의 SVG 누락 방지)
   const liveSvgs=[...viewEl.querySelectorAll("svg.chart")].map(s=>{ const r=s.getBoundingClientRect(); return {w:Math.round(r.width), h:Math.round(r.height)}; });
 
@@ -1418,8 +1448,22 @@ function purgeAutoRecords(){
   });
   return n;
 }
+// 한 번만: 예전에 다른 앱과 저장공간을 공유하며 이미 섞여 들어온 사람들을
+// state.people에서 실제로 제거한다 (ownPeople()은 화면만 걸러줄 뿐 원본 배열은
+// 그대로 두므로, 이걸 안 하면 섞인 사람이 계속 로컬에 쌓이고 클라우드에도 다시
+// 올라간다). OWN_NAMES/grp 기준은 ownsPerson()과 동일 — 새 규칙을 만들지 않는다.
+function pruneToOwnedOnce(){
+  try{
+    if(localStorage.getItem(PRUNE_FLAG_KEY)) return;
+    const before=(state.people||[]).length;
+    state.people=ownPeople();
+    localStorage.setItem(PRUNE_FLAG_KEY,"1");
+    if(state.people.length!==before){ persistLocal(); toast("다른 앱과 섞였던 인원을 정리했어요"); }
+  }catch(e){}
+}
 async function init(){
   loadLocal();
+  pruneToOwnedOnce();
   let purged=purgeAutoRecords();
   render();
   if(cfg.bin&&cfg.key){
